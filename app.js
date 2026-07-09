@@ -59,6 +59,19 @@ function persist(docName, items) {
   return coll().doc(docName).set({ items });
 }
 
+// Devuelve el próximo número de ticket, consecutivo, sin importar qué cajero está vendiendo.
+// Usa una transacción de Firestore para que dos ventas al mismo tiempo nunca repitan número.
+function nextTicketNumber() {
+  const ref = coll().doc("contador_ventas");
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const actual = snap.exists ? snap.data().ultimo || 0 : 0;
+    const siguiente = actual + 1;
+    tx.set(ref, { ultimo: siguiente });
+    return siguiente;
+  });
+}
+
 function App() {
   const [ready, setReady] = useState(false);
   const [productos, setProductos] = useState([]);
@@ -263,7 +276,9 @@ function App() {
           productos={productos}
           setProductos={persistProductos}
           cajas={cajas}
+          setCajas={persistCajas}
           ventas={ventas}
+          setVentas={persistVentas}
           movimientos={movimientos}
           usuarios={usuarios}
           setUsuarios={persistUsuarios}
@@ -511,13 +526,14 @@ function POS({ caja, productos, onSalir, onVenta, onMovimiento, onIrACierre }) {
         <CheckoutModal
           cartDetailed={cartDetailed}
           onClose={() => setShowCheckout(false)}
-          onConfirm={(moneda, metodoPago) => {
+          onConfirm={async (moneda, metodoPago) => {
             const items = cartDetailed.map((i) => {
               const precioUnit = moneda === "GS" ? i.p.precioGs : i.p.precioBRL;
               return { productId: i.p.id, nombre: i.p.nombre, qty: i.qty, precioUnit, subtotal: precioUnit * i.qty };
             });
             const total = items.reduce((s, i) => s + i.subtotal, 0);
-            const venta = { id: uid(), cajaId: caja.id, operador: caja.operador, fecha: nowISO(), items, moneda, metodoPago, total };
+            const numero = await nextTicketNumber();
+            const venta = { id: uid(), numero, cajaId: caja.id, operador: caja.operador, fecha: nowISO(), items, moneda, metodoPago, total };
             onVenta(venta);
             setShowCheckout(false);
             setTicket(venta);
@@ -608,6 +624,7 @@ function TicketVenta({ venta, caja, onClose }) {
       <div className="print-area" style={styles.ticket}>
         <div style={{ textAlign: "center", fontWeight: 700 }}>TAP CONTROL</div>
         <div style={{ textAlign: "center", fontSize: 11 }}>Comprobante de venta</div>
+        <div style={{ textAlign: "center", fontSize: 12, fontWeight: 700, marginTop: 2 }}>Ticket N° {String(venta.numero ?? "-").padStart(6, "0")}</div>
         <hr style={styles.ticketHr} />
         <div style={styles.ticketRow}><span>Fecha</span><span>{fmtDateTime(venta.fecha)}</span></div>
         <div style={styles.ticketRow}><span>Operador</span><span>{venta.operador}</span></div>
@@ -637,11 +654,11 @@ function Cierre({ caja, ventas, movimientos, onBack, onCerrar, onFinalizar }) {
   const [contadoGs, setContadoGs] = useState("");
   const [contadoBrl, setContadoBrl] = useState("");
 
-  const sum = (arr, f) => arr.filter(f).reduce((s, v) => s + v.total, 0);
+  // Estos cálculos se usan solo para guardar el dato — el cajero NO los ve (cierre ciego).
+  // El detalle completo queda disponible para el administrador en Back Office > Turnos.
+  const sum = (arr, f) => arr.filter((v) => !v.anulada).filter(f).reduce((s, v) => s + v.total, 0);
   const ventasEfectivoGs = sum(ventas, (v) => v.moneda === "GS" && v.metodoPago === "efectivo");
-  const ventasTarjetaGs = sum(ventas, (v) => v.moneda === "GS" && v.metodoPago === "tarjeta");
   const ventasEfectivoBrl = sum(ventas, (v) => v.moneda === "BRL" && v.metodoPago === "efectivo");
-  const ventasTarjetaBrl = sum(ventas, (v) => v.moneda === "BRL" && v.metodoPago === "tarjeta");
 
   const retirosGs = movimientos.filter((m) => m.tipo === "retiro" && m.moneda === "GS").reduce((s, m) => s + m.monto, 0);
   const ingresosGs = movimientos.filter((m) => m.tipo === "ingreso" && m.moneda === "GS").reduce((s, m) => s + m.monto, 0);
@@ -653,34 +670,25 @@ function Cierre({ caja, ventas, movimientos, onBack, onCerrar, onFinalizar }) {
 
   const finalContadoGs = cerrada ? caja.cierreGs : Number(contadoGs) || 0;
   const finalContadoBrl = cerrada ? caja.cierreBRL : Number(contadoBrl) || 0;
-  const diffGs = finalContadoGs - esperadoGs;
-  const diffBrl = finalContadoBrl - esperadoBrl;
 
   return (
     <div style={styles.centerScreen}>
       <BackBar onBack={onBack} title="Cierre de caja" />
       <div style={{ ...styles.card, maxWidth: 420 }}>
-        <SectionTitle>Resumen del turno · {caja.operador}</SectionTitle>
+        <SectionTitle>Cierre de turno · {caja.operador}</SectionTitle>
         <MiniRow label="Apertura ₲" value={fmtGs(caja.aperturaGs)} />
         <MiniRow label="Apertura R$" value={fmtBRL(caja.aperturaBRL)} />
-        <MiniRow label="Ventas efectivo ₲" value={fmtGs(ventasEfectivoGs)} />
-        <MiniRow label="Ventas tarjeta ₲" value={fmtGs(ventasTarjetaGs)} />
-        <MiniRow label="Ventas efectivo R$" value={fmtBRL(ventasEfectivoBrl)} />
-        <MiniRow label="Ventas tarjeta R$" value={fmtBRL(ventasTarjetaBrl)} />
         <MiniRow label="Ingresos ₲ / retiros ₲" value={`${fmtGs(ingresosGs)} / ${fmtGs(retirosGs)}`} />
         <MiniRow label="Ingresos R$ / retiros R$" value={`${fmtBRL(ingresosBrl)} / ${fmtBRL(retirosBrl)}`} />
-        <hr style={{ margin: "12px 0", border: "none", borderTop: "1px solid #E7DCC9" }} />
-        <MiniRow label="Esperado en caja ₲" value={fmtGs(esperadoGs)} bold />
-        <MiniRow label="Esperado en caja R$" value={fmtBRL(esperadoBrl)} bold />
 
         {!cerrada ? (
           <>
-            <label style={{ ...styles.label, marginTop: 16 }}>Efectivo contado ₲</label>
+            <hr style={{ margin: "12px 0", border: "none", borderTop: "1px solid #E7DCC9" }} />
+            <p style={{ color: "#7C5E3C", fontSize: 13, marginBottom: 4 }}>Contá el efectivo que tenés en caja y cargalo acá.</p>
+            <label style={{ ...styles.label, marginTop: 12 }}>Efectivo contado ₲</label>
             <input style={styles.input} type="number" value={contadoGs} onChange={(e) => setContadoGs(e.target.value)} />
             <label style={{ ...styles.label, marginTop: 12 }}>Efectivo contado R$</label>
             <input style={styles.input} type="number" value={contadoBrl} onChange={(e) => setContadoBrl(e.target.value)} />
-            <MiniRow label="Diferencia ₲" value={fmtGs(diffGs)} highlight={diffGs !== 0} />
-            <MiniRow label="Diferencia R$" value={fmtBRL(diffBrl)} highlight={diffBrl !== 0} />
             <button style={{ ...styles.primaryButton, marginTop: 16 }}
               onClick={() => { onCerrar(Number(contadoGs) || 0, Number(contadoBrl) || 0, { gs: esperadoGs, brl: esperadoBrl }); setCerrada(true); }}>
               Cerrar caja
@@ -688,10 +696,9 @@ function Cierre({ caja, ventas, movimientos, onBack, onCerrar, onFinalizar }) {
           </>
         ) : (
           <>
+            <hr style={{ margin: "12px 0", border: "none", borderTop: "1px solid #E7DCC9" }} />
             <MiniRow label="Contado ₲" value={fmtGs(finalContadoGs)} />
             <MiniRow label="Contado R$" value={fmtBRL(finalContadoBrl)} />
-            <MiniRow label="Diferencia ₲" value={fmtGs(diffGs)} highlight={diffGs !== 0} />
-            <MiniRow label="Diferencia R$" value={fmtBRL(diffBrl)} highlight={diffBrl !== 0} />
             <div className="print-area" style={{ ...styles.ticket, marginTop: 16 }}>
               <div style={{ textAlign: "center", fontWeight: 700 }}>TAP CONTROL</div>
               <div style={{ textAlign: "center", fontSize: 11 }}>Comprobante de cierre de caja</div>
@@ -700,13 +707,8 @@ function Cierre({ caja, ventas, movimientos, onBack, onCerrar, onFinalizar }) {
               <div style={styles.ticketRow}><span>Apertura</span><span>{fmtDateTime(caja.fechaApertura)}</span></div>
               <div style={styles.ticketRow}><span>Cierre</span><span>{fmtDateTime(caja.fechaCierre)}</span></div>
               <hr style={styles.ticketHr} />
-              <div style={styles.ticketRow}><span>Esperado ₲</span><span>{fmtGs(esperadoGs)}</span></div>
               <div style={styles.ticketRow}><span>Contado ₲</span><span>{fmtGs(finalContadoGs)}</span></div>
-              <div style={styles.ticketRow}><span>Diferencia ₲</span><span>{fmtGs(diffGs)}</span></div>
-              <hr style={styles.ticketHr} />
-              <div style={styles.ticketRow}><span>Esperado R$</span><span>{fmtBRL(esperadoBrl)}</span></div>
               <div style={styles.ticketRow}><span>Contado R$</span><span>{fmtBRL(finalContadoBrl)}</span></div>
-              <div style={styles.ticketRow}><span>Diferencia R$</span><span>{fmtBRL(diffBrl)}</span></div>
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
               <button style={styles.secondaryButton} onClick={() => window.print()}>🖨 Imprimir</button>
@@ -720,7 +722,7 @@ function Cierre({ caja, ventas, movimientos, onBack, onCerrar, onFinalizar }) {
 }
 
 // ================= BACK OFFICE =================
-function BackOffice({ onBack, productos, setProductos, cajas, ventas, movimientos, usuarios, setUsuarios, config, setConfig, showToast }) {
+function BackOffice({ onBack, productos, setProductos, cajas, setCajas, ventas, setVentas, movimientos, usuarios, setUsuarios, config, setConfig, showToast }) {
   const [tab, setTab] = useState("reportes");
   return (
     <div style={styles.boLayout}>
@@ -729,6 +731,7 @@ function BackOffice({ onBack, productos, setProductos, cajas, ventas, movimiento
         <TabBtn active={tab === "reportes"} label="Reportes" emoji="📊" onClick={() => setTab("reportes")} />
         <TabBtn active={tab === "productos"} label="Productos" emoji="🍺" onClick={() => setTab("productos")} />
         <TabBtn active={tab === "turnos"} label="Turnos" emoji="📋" onClick={() => setTab("turnos")} />
+        <TabBtn active={tab === "ventas"} label="Ventas" emoji="🧾" onClick={() => setTab("ventas")} />
         <TabBtn active={tab === "movimientos"} label="Movimientos" emoji="🔁" onClick={() => setTab("movimientos")} />
         <TabBtn active={tab === "usuarios"} label="Usuarios" emoji="👤" onClick={() => setTab("usuarios")} />
         <TabBtn active={tab === "config"} label="Configuración" emoji="🎨" onClick={() => setTab("config")} />
@@ -736,7 +739,8 @@ function BackOffice({ onBack, productos, setProductos, cajas, ventas, movimiento
       <div style={{ padding: "0 16px 32px" }}>
         {tab === "reportes" && <Reportes ventas={ventas} cajas={cajas} productos={productos} />}
         {tab === "productos" && <Productos productos={productos} setProductos={setProductos} showToast={showToast} />}
-        {tab === "turnos" && <Turnos cajas={cajas} ventas={ventas} movimientos={movimientos} />}
+        {tab === "turnos" && <Turnos cajas={cajas} setCajas={setCajas} ventas={ventas} movimientos={movimientos} showToast={showToast} />}
+        {tab === "ventas" && <VentasAdmin ventas={ventas} setVentas={setVentas} showToast={showToast} />}
         {tab === "movimientos" && <MovimientosHistorial movimientos={movimientos} />}
         {tab === "usuarios" && <Usuarios usuarios={usuarios} setUsuarios={setUsuarios} config={config} setConfig={setConfig} showToast={showToast} />}
         {tab === "config" && <Configuracion config={config} setConfig={setConfig} showToast={showToast} />}
@@ -756,7 +760,7 @@ function Reportes({ ventas, cajas, productos }) {
   else if (modo === "mes") { rangoDesde = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-01`; rangoHasta = todayStr(); }
   else { rangoDesde = desde; rangoHasta = hasta; }
 
-  const ventasFiltradas = ventas.filter((v) => { const d = dayOf(v.fecha); return d >= rangoDesde && d <= rangoHasta; });
+  const ventasFiltradas = ventas.filter((v) => !v.anulada).filter((v) => { const d = dayOf(v.fecha); return d >= rangoDesde && d <= rangoHasta; });
 
   const totalGs = ventasFiltradas.filter((v) => v.moneda === "GS").reduce((s, v) => s + v.total, 0);
   const totalBrl = ventasFiltradas.filter((v) => v.moneda === "BRL").reduce((s, v) => s + v.total, 0);
@@ -809,7 +813,7 @@ function Reportes({ ventas, cajas, productos }) {
       <SectionTitle>Venta por turno</SectionTitle>
       <TableBox headers={["Operador", "Apertura", "Cierre", "Total ₲", "Total R$", "Estado"]}
         rows={cajasEnRango.map((c) => {
-          const vs = ventas.filter((v) => v.cajaId === c.id);
+          const vs = ventas.filter((v) => v.cajaId === c.id && !v.anulada);
           const tg = vs.filter((v) => v.moneda === "GS").reduce((s, v) => s + v.total, 0);
           const tb = vs.filter((v) => v.moneda === "BRL").reduce((s, v) => s + v.total, 0);
           return [c.operador, fmtDateTime(c.fechaApertura), fmtDateTime(c.fechaCierre), fmtGs(tg), fmtBRL(tb), c.estado];
@@ -1073,15 +1077,52 @@ function CambiarPasswordAdmin({ config, setConfig, showToast }) {
   );
 }
 
-function Turnos({ cajas, ventas, movimientos }) {
+function Turnos({ cajas, setCajas, ventas, movimientos, showToast }) {
   const [detalle, setDetalle] = useState(null);
+  const [contadoGs, setContadoGs] = useState("");
+  const [contadoBrl, setContadoBrl] = useState("");
   const ordenadas = [...cajas].sort((a, b) => new Date(b.fechaApertura) - new Date(a.fechaApertura));
+
+  const abrirDetalle = (c) => { setDetalle(c); setContadoGs(""); setContadoBrl(""); };
+
+  const ventasDelTurno = detalle ? ventas.filter((v) => v.cajaId === detalle.id) : [];
+  const ventasValidas = ventasDelTurno.filter((v) => !v.anulada);
+  const sum = (f) => ventasValidas.filter(f).reduce((s, v) => s + v.total, 0);
+  const ventasEfectivoGs = detalle ? sum((v) => v.moneda === "GS" && v.metodoPago === "efectivo") : 0;
+  const ventasTarjetaGs = detalle ? sum((v) => v.moneda === "GS" && v.metodoPago === "tarjeta") : 0;
+  const ventasEfectivoBrl = detalle ? sum((v) => v.moneda === "BRL" && v.metodoPago === "efectivo") : 0;
+  const ventasTarjetaBrl = detalle ? sum((v) => v.moneda === "BRL" && v.metodoPago === "tarjeta") : 0;
+
+  const movsDelTurno = detalle ? movimientos.filter((m) => m.cajaId === detalle.id) : [];
+  const retirosGs = movsDelTurno.filter((m) => m.tipo === "retiro" && m.moneda === "GS").reduce((s, m) => s + m.monto, 0);
+  const ingresosGs = movsDelTurno.filter((m) => m.tipo === "ingreso" && m.moneda === "GS").reduce((s, m) => s + m.monto, 0);
+  const retirosBrl = movsDelTurno.filter((m) => m.tipo === "retiro" && m.moneda === "BRL").reduce((s, m) => s + m.monto, 0);
+  const ingresosBrl = movsDelTurno.filter((m) => m.tipo === "ingreso" && m.moneda === "BRL").reduce((s, m) => s + m.monto, 0);
+
+  const esperadoGs = detalle ? detalle.aperturaGs + ventasEfectivoGs + ingresosGs - retirosGs : 0;
+  const esperadoBrl = detalle ? detalle.aperturaBRL + ventasEfectivoBrl + ingresosBrl - retirosBrl : 0;
+
+  const cerrarDesdeAdmin = async () => {
+    const cierreGs = Number(contadoGs) || 0;
+    const cierreBRL = Number(contadoBrl) || 0;
+    const next = cajas.map((c) =>
+      c.id === detalle.id
+        ? { ...c, estado: "cerrada", fechaCierre: nowISO(), cierreGs, cierreBRL,
+            esperadoGs, esperadoBRL: esperadoBrl,
+            diferenciaGs: cierreGs - esperadoGs, diferenciaBRL: cierreBRL - esperadoBrl }
+        : c
+    );
+    await setCajas(next);
+    showToast("Caja cerrada desde el Back Office");
+    setDetalle(null);
+  };
+
   return (
     <div>
       <SectionTitle>Historial de turnos ({cajas.length})</SectionTitle>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {ordenadas.map((c) => (
-          <button key={c.id} style={styles.productRow} onClick={() => setDetalle(c)}>
+          <button key={c.id} style={styles.productRow} onClick={() => abrirDetalle(c)}>
             <div style={{ flex: 1, textAlign: "left" }}>
               <div style={{ fontWeight: 700 }}>{c.operador} · <span style={{ color: c.estado === "abierta" ? "#166534" : "#7C5E3C" }}>{c.estado}</span></div>
               <div style={{ fontSize: 12, color: "#B08968" }}>{fmtDateTime(c.fechaApertura)} → {c.fechaCierre ? fmtDateTime(c.fechaCierre) : "en curso"}</div>
@@ -1093,21 +1134,125 @@ function Turnos({ cajas, ventas, movimientos }) {
       {detalle && (
         <ModalWrap onClose={() => setDetalle(null)} title={`Turno de ${detalle.operador}`}>
           <MiniRow label="Apertura ₲ / R$" value={`${fmtGs(detalle.aperturaGs)} / ${fmtBRL(detalle.aperturaBRL)}`} />
-          {detalle.estado === "cerrada" && (
+          <MiniRow label="Ventas efectivo ₲ / tarjeta ₲" value={`${fmtGs(ventasEfectivoGs)} / ${fmtGs(ventasTarjetaGs)}`} />
+          <MiniRow label="Ventas efectivo R$ / tarjeta R$" value={`${fmtBRL(ventasEfectivoBrl)} / ${fmtBRL(ventasTarjetaBrl)}`} />
+          <MiniRow label="Ingresos ₲ / retiros ₲" value={`${fmtGs(ingresosGs)} / ${fmtGs(retirosGs)}`} />
+          <MiniRow label="Ingresos R$ / retiros R$" value={`${fmtBRL(ingresosBrl)} / ${fmtBRL(retirosBrl)}`} />
+          <MiniRow label="Esperado en caja ₲ / R$" value={`${fmtGs(esperadoGs)} / ${fmtBRL(esperadoBrl)}`} bold />
+
+          {detalle.estado === "cerrada" ? (
             <>
               <MiniRow label="Cierre ₲ / R$" value={`${fmtGs(detalle.cierreGs)} / ${fmtBRL(detalle.cierreBRL)}`} />
               <MiniRow label="Diferencia ₲" value={fmtGs(detalle.diferenciaGs)} highlight={detalle.diferenciaGs !== 0} />
               <MiniRow label="Diferencia R$" value={fmtBRL(detalle.diferenciaBRL)} highlight={detalle.diferenciaBRL !== 0} />
             </>
+          ) : (
+            <>
+              <hr style={{ margin: "12px 0", border: "none", borderTop: "1px solid #E7DCC9" }} />
+              <p style={{ color: "#7C5E3C", fontSize: 13, marginBottom: 8 }}>Esta caja sigue abierta. Podés cerrarla vos mismo desde acá si hace falta.</p>
+              <label style={styles.label}>Efectivo contado ₲</label>
+              <input style={styles.input} type="number" value={contadoGs} onChange={(e) => setContadoGs(e.target.value)} />
+              <label style={{ ...styles.label, marginTop: 12 }}>Efectivo contado R$</label>
+              <input style={styles.input} type="number" value={contadoBrl} onChange={(e) => setContadoBrl(e.target.value)} />
+              <button style={{ ...styles.primaryButton, marginTop: 12 }} onClick={cerrarDesdeAdmin}>Cerrar esta caja</button>
+            </>
           )}
+
           <SectionTitle>Ventas del turno</SectionTitle>
-          <TableBox headers={["Hora", "Total", "Moneda", "Pago"]}
-            rows={ventas.filter((v) => v.cajaId === detalle.id).map((v) => [fmtDateTime(v.fecha), fmtMoney(v.total, v.moneda), v.moneda, v.metodoPago])}
+          <TableBox headers={["N°", "Hora", "Total", "Moneda", "Pago", "Estado"]}
+            rows={ventasDelTurno.map((v) => [
+              v.numero ?? "-",
+              fmtDateTime(v.fecha),
+              fmtMoney(v.total, v.moneda),
+              v.moneda,
+              v.metodoPago,
+              v.anulada ? "Anulada" : "OK",
+            ])}
             empty="Sin ventas" />
           <SectionTitle>Movimientos del turno</SectionTitle>
           <TableBox headers={["Hora", "Tipo", "Monto", "Por", "Obs."]}
-            rows={movimientos.filter((m) => m.cajaId === detalle.id).map((m) => [fmtDateTime(m.fecha), m.tipo, fmtMoney(m.monto, m.moneda), m.usuario, m.observacion])}
+            rows={movsDelTurno.map((m) => [fmtDateTime(m.fecha), m.tipo, fmtMoney(m.monto, m.moneda), m.usuario, m.observacion])}
             empty="Sin movimientos" />
+        </ModalWrap>
+      )}
+    </div>
+  );
+}
+
+// ================= VENTAS (anular / cambiar método de pago) =================
+function VentasAdmin({ ventas, setVentas, showToast }) {
+  const [anulando, setAnulando] = useState(null);
+  const [busqueda, setBusqueda] = useState("");
+
+  const ordenadas = [...ventas].sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+  const filtradas = busqueda.trim()
+    ? ordenadas.filter((v) => String(v.numero ?? "").includes(busqueda.trim()) || v.operador.toLowerCase().includes(busqueda.trim().toLowerCase()))
+    : ordenadas.slice(0, 100); // por defecto, últimas 100 para no saturar la pantalla
+
+  const cambiarPago = (venta) => {
+    const nuevo = venta.metodoPago === "efectivo" ? "tarjeta" : "efectivo";
+    setVentas(ventas.map((v) => (v.id === venta.id ? { ...v, metodoPago: nuevo } : v)));
+    showToast(`Ticket #${venta.numero ?? ""} → ahora figura como ${nuevo}`);
+  };
+
+  const confirmarAnular = () => {
+    setVentas(ventas.map((v) => (v.id === anulando.id ? { ...v, anulada: true } : v)));
+    showToast(`Ticket #${anulando.numero ?? ""} anulado`);
+    setAnulando(null);
+  };
+
+  const reactivar = (venta) => {
+    setVentas(ventas.map((v) => (v.id === venta.id ? { ...v, anulada: false } : v)));
+    showToast(`Ticket #${venta.numero ?? ""} reactivado`);
+  };
+
+  return (
+    <div>
+      <SectionTitle>Ventas ({ventas.length})</SectionTitle>
+      <input style={{ ...styles.input, marginBottom: 12 }} placeholder="Buscar por N° de ticket u operador…"
+        value={busqueda} onChange={(e) => setBusqueda(e.target.value)} />
+      {!busqueda.trim() && <p style={{ fontSize: 12, color: "#B08968", marginTop: -6, marginBottom: 10 }}>Mostrando las últimas 100 ventas. Buscá por número u operador para encontrar otras.</p>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {filtradas.map((v) => (
+          <div key={v.id} style={{ ...styles.productRow, alignItems: "flex-start", opacity: v.anulada ? 0.6 : 1 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 700 }}>
+                Ticket #{v.numero ?? "-"} {v.anulada && <span style={{ color: "#B91C1C", fontSize: 11 }}>(ANULADO)</span>}
+              </div>
+              <div style={{ fontSize: 12, color: "#B08968" }}>{fmtDateTime(v.fecha)} · {v.operador}</div>
+              <div style={{ fontSize: 13, marginTop: 2 }}>{fmtMoney(v.total, v.moneda)} · <b>{v.metodoPago}</b></div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {!v.anulada ? (
+                <>
+                  <button style={styles.secondaryButton} onClick={() => cambiarPago(v)}>
+                    Cambiar a {v.metodoPago === "efectivo" ? "tarjeta" : "efectivo"}
+                  </button>
+                  <button style={{ ...styles.secondaryButton, color: "#B91C1C", borderColor: "#B91C1C" }} onClick={() => setAnulando(v)}>
+                    Anular
+                  </button>
+                </>
+              ) : (
+                <button style={styles.secondaryButton} onClick={() => reactivar(v)}>Reactivar</button>
+              )}
+            </div>
+          </div>
+        ))}
+        {filtradas.length === 0 && <p style={{ color: "#B08968" }}>No se encontraron ventas.</p>}
+      </div>
+
+      {anulando && (
+        <ModalWrap onClose={() => setAnulando(null)} title="Anular ticket">
+          <p style={{ color: "#7C5E3C", fontSize: 14 }}>
+            ¿Confirmás anular el <b>ticket #{anulando.numero ?? "-"}</b> por {fmtMoney(anulando.total, anulando.moneda)}?
+          </p>
+          <p style={{ color: "#B08968", fontSize: 12, marginTop: 8 }}>
+            El ticket queda marcado como anulado y se descuenta de los reportes de venta, pero no se borra (queda el registro para auditoría).
+          </p>
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <button style={styles.secondaryButton} onClick={() => setAnulando(null)}>Cancelar</button>
+            <button style={{ ...styles.primaryButton, background: "#B91C1C" }} onClick={confirmarAnular}>Sí, anular</button>
+          </div>
         </ModalWrap>
       )}
     </div>
