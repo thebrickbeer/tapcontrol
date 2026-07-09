@@ -12,6 +12,30 @@ const fmtDateTime = (iso) =>
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const dayOf = (iso) => iso.slice(0, 10);
 
+// Achica una foto (File) y la devuelve como texto base64 listo para guardar.
+// maxDim = tamaño máximo en píxeles del lado más largo. quality = calidad JPG (0 a 1).
+function resizeImageToBase64(file, maxDim = 220, quality = 0.6) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("No se pudo leer la imagen"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Archivo de imagen inválido"));
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > height && width > maxDim) { height = Math.round((height * maxDim) / width); width = maxDim; }
+        else if (height > maxDim) { width = Math.round((width * maxDim) / height); height = maxDim; }
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 const CATS = [
   { id: "chop", label: "Chop / Tirada", emoji: "🍺" },
   { id: "botella_cerveza", label: "Botella Cerveza", emoji: "🍾" },
@@ -39,6 +63,8 @@ function App() {
   const [cajas, setCajas] = useState([]);
   const [ventas, setVentas] = useState([]);
   const [movimientos, setMovimientos] = useState([]);
+  const [usuarios, setUsuarios] = useState([]);
+  const [config, setConfig] = useState(null);
   const [view, setView] = useState("home");
   const [operador, setOperador] = useState("");
   const [activeCajaId, setActiveCajaId] = useState(null);
@@ -52,7 +78,7 @@ function App() {
 
   useEffect(() => {
     let unsubs = [];
-    const flags = { productos: false, cajas: false, ventas: false, movimientos: false };
+    const flags = { productos: false, cajas: false, ventas: false, movimientos: false, usuarios: false, config: false };
     const checkReady = () => {
       if (Object.values(flags).every(Boolean)) setReady(true);
     };
@@ -90,6 +116,18 @@ function App() {
           flags.movimientos = true; checkReady();
         }, (e) => { console.error(e); setConnError(true); })
       );
+      unsubs.push(
+        coll().doc("usuarios").onSnapshot((snap) => {
+          setUsuarios(snap.exists ? snap.data().items || [] : []);
+          flags.usuarios = true; checkReady();
+        }, (e) => { console.error(e); setConnError(true); })
+      );
+      unsubs.push(
+        coll().doc("config").onSnapshot((snap) => {
+          setConfig(snap.exists ? snap.data() : {});
+          flags.config = true; checkReady();
+        }, (e) => { console.error(e); setConnError(true); })
+      );
     });
 
     return () => { unsubAuth(); unsubs.forEach((u) => u()); };
@@ -99,6 +137,8 @@ function App() {
   const persistCajas = async (next) => { setCajas(next); await persist("cajas", next); };
   const persistVentas = async (next) => { setVentas(next); await persist("ventas", next); };
   const persistMovimientos = async (next) => { setMovimientos(next); await persist("movimientos", next); };
+  const persistUsuarios = async (next) => { setUsuarios(next); await persist("usuarios", next); };
+  const persistConfig = async (next) => { setConfig(next); await coll().doc("config").set(next); };
 
   const activeCaja = cajas.find((c) => c.id === activeCajaId);
 
@@ -141,11 +181,21 @@ function App() {
       {toast && <div style={styles.toast}>{toast}</div>}
 
       {view === "home" && (
-        <Home onOperador={() => setView("operador-login")} onBackOffice={() => setView("backoffice")} />
+        <Home onOperador={() => setView("operador-login")} onBackOffice={() => setView("admin-gate")} />
+      )}
+
+      {view === "admin-gate" && (
+        <AdminGate
+          config={config}
+          onBack={() => setView("home")}
+          onConfigured={async (password) => { await persistConfig({ ...config, adminPassword: password }); }}
+          onSuccess={() => setView("backoffice")}
+        />
       )}
 
       {view === "operador-login" && (
         <OperadorLogin
+          usuarios={usuarios}
           onBack={() => setView("home")}
           onEnter={(nombre) => {
             setOperador(nombre);
@@ -213,6 +263,10 @@ function App() {
           cajas={cajas}
           ventas={ventas}
           movimientos={movimientos}
+          usuarios={usuarios}
+          setUsuarios={persistUsuarios}
+          config={config}
+          setConfig={persistConfig}
           showToast={showToast}
         />
       )}
@@ -237,17 +291,113 @@ function Home({ onOperador, onBackOffice }) {
   );
 }
 
-// ================= OPERADOR LOGIN =================
-function OperadorLogin({ onBack, onEnter }) {
-  const [nombre, setNombre] = useState("");
+// ================= ADMIN GATE =================
+function AdminGate({ config, onBack, onConfigured, onSuccess }) {
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  // Todavía no existe una contraseña de administrador: hay que crearla primero.
+  if (config && !config.adminPassword) {
+    const crear = async () => {
+      if (password.length < 4) { setError("La contraseña debe tener al menos 4 caracteres."); return; }
+      if (password !== confirmPassword) { setError("Las contraseñas no coinciden."); return; }
+      setSaving(true);
+      await onConfigured(password);
+      setSaving(false);
+      onSuccess();
+    };
+    return (
+      <div style={styles.centerScreen}>
+        <BackBar onBack={onBack} title="Crear contraseña de administrador" />
+        <div style={styles.card}>
+          <p style={{ color: "#7C5E3C", marginBottom: 16, fontSize: 13 }}>
+            Es la primera vez que entrás al Back Office. Elegí una contraseña para vos como administrador — te la va a pedir cada vez que quieras entrar.
+          </p>
+          <label style={styles.label}>Nueva contraseña</label>
+          <input style={styles.input} type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
+          <label style={{ ...styles.label, marginTop: 12 }}>Repetir contraseña</label>
+          <input style={styles.input} type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
+          {error && <p style={{ color: "#B91C1C", fontSize: 12, marginTop: 8 }}>{error}</p>}
+          <button style={{ ...styles.primaryButton, marginTop: 16 }} disabled={saving} onClick={crear}>
+            {saving ? "Guardando…" : "Crear contraseña y entrar"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Ya existe una contraseña: pedirla para entrar.
+  const entrar = () => {
+    if (password === config.adminPassword) onSuccess();
+    else setError("Contraseña incorrecta.");
+  };
   return (
     <div style={styles.centerScreen}>
-      <BackBar onBack={onBack} title="Identificación" />
+      <BackBar onBack={onBack} title="Back Office" />
       <div style={styles.card}>
-        <label style={styles.label}>Nombre del operador</label>
-        <input style={styles.input} value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ej: Marcos" autoFocus />
-        <button style={{ ...styles.primaryButton, marginTop: 16 }} disabled={!nombre.trim()} onClick={() => onEnter(nombre.trim())}>
-          Continuar
+        <label style={styles.label}>Contraseña de administrador</label>
+        <input style={styles.input} type="password" value={password} autoFocus
+          onChange={(e) => { setPassword(e.target.value); setError(""); }}
+          onKeyDown={(e) => { if (e.key === "Enter") entrar(); }} />
+        {error && <p style={{ color: "#B91C1C", fontSize: 12, marginTop: 8 }}>{error}</p>}
+        <button style={{ ...styles.primaryButton, marginTop: 16 }} disabled={!password} onClick={entrar}>
+          Entrar
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ================= OPERADOR LOGIN =================
+function OperadorLogin({ onBack, onEnter, usuarios }) {
+  const [selected, setSelected] = useState(null);
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState("");
+  const activos = (usuarios || []).filter((u) => u.activo !== false);
+
+  if (!selected) {
+    return (
+      <div style={styles.centerScreen}>
+        <BackBar onBack={onBack} title="Identificación" />
+        <div style={{ width: "100%", maxWidth: 380 }}>
+          {activos.length === 0 && (
+            <div style={styles.card}>
+              <p style={{ color: "#7C5E3C", fontSize: 13 }}>
+                Todavía no hay cajeros creados. Pedile al administrador que cree tu usuario en <b>Back Office → Usuarios</b>.
+              </p>
+            </div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
+            {activos.map((u) => (
+              <button key={u.id} style={styles.productRow} onClick={() => { setSelected(u); setPin(""); setError(""); }}>
+                <div style={{ flex: 1, textAlign: "left", fontWeight: 700 }}>👤 {u.nombre}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const validar = () => {
+    if (pin === selected.pin) onEnter(selected.nombre);
+    else setError("PIN incorrecto.");
+  };
+
+  return (
+    <div style={styles.centerScreen}>
+      <BackBar onBack={() => setSelected(null)} title={selected.nombre} />
+      <div style={styles.card}>
+        <label style={styles.label}>Ingresá tu PIN</label>
+        <input style={{ ...styles.input, letterSpacing: 6, textAlign: "center", fontSize: 20 }} type="password" inputMode="numeric" maxLength={4}
+          value={pin} autoFocus
+          onChange={(e) => { setPin(e.target.value.replace(/\D/g, "").slice(0, 4)); setError(""); }}
+          onKeyDown={(e) => { if (e.key === "Enter") validar(); }} />
+        {error && <p style={{ color: "#B91C1C", fontSize: 12, marginTop: 8 }}>{error}</p>}
+        <button style={{ ...styles.primaryButton, marginTop: 16 }} disabled={pin.length !== 4} onClick={validar}>
+          Ingresar
         </button>
       </div>
     </div>
@@ -322,6 +472,9 @@ function POS({ caja, productos, onSalir, onVenta, onMovimiento, onIrACierre }) {
       <div style={styles.productGrid}>
         {filtered.map((p) => (
           <button key={p.id} style={styles.productCard} onClick={() => addToCart(p)}>
+            {p.imagen
+              ? <img src={p.imagen} alt={p.nombre} style={styles.productImg} />
+              : <div style={{ ...styles.productImg, ...styles.thumbPlaceholder, fontSize: 28 }}>🍺</div>}
             <div style={{ fontWeight: 700, fontSize: 14 }}>{p.nombre}</div>
             <div style={{ fontSize: 11, color: "#B08968", marginTop: 2 }}>{p.marca}</div>
             <div style={{ marginTop: 8, fontSize: 13, color: "#B45309", fontWeight: 700 }}>{fmtGs(p.precioGs)}</div>
@@ -563,7 +716,7 @@ function Cierre({ caja, ventas, movimientos, onBack, onCerrar, onFinalizar }) {
 }
 
 // ================= BACK OFFICE =================
-function BackOffice({ onBack, productos, setProductos, cajas, ventas, movimientos, showToast }) {
+function BackOffice({ onBack, productos, setProductos, cajas, ventas, movimientos, usuarios, setUsuarios, config, setConfig, showToast }) {
   const [tab, setTab] = useState("reportes");
   return (
     <div style={styles.boLayout}>
@@ -573,12 +726,14 @@ function BackOffice({ onBack, productos, setProductos, cajas, ventas, movimiento
         <TabBtn active={tab === "productos"} label="Productos" emoji="🍺" onClick={() => setTab("productos")} />
         <TabBtn active={tab === "turnos"} label="Turnos" emoji="📋" onClick={() => setTab("turnos")} />
         <TabBtn active={tab === "movimientos"} label="Movimientos" emoji="🔁" onClick={() => setTab("movimientos")} />
+        <TabBtn active={tab === "usuarios"} label="Usuarios" emoji="👤" onClick={() => setTab("usuarios")} />
       </div>
       <div style={{ padding: "0 16px 32px" }}>
         {tab === "reportes" && <Reportes ventas={ventas} cajas={cajas} productos={productos} />}
         {tab === "productos" && <Productos productos={productos} setProductos={setProductos} showToast={showToast} />}
         {tab === "turnos" && <Turnos cajas={cajas} ventas={ventas} movimientos={movimientos} />}
         {tab === "movimientos" && <MovimientosHistorial movimientos={movimientos} />}
+        {tab === "usuarios" && <Usuarios usuarios={usuarios} setUsuarios={setUsuarios} config={config} setConfig={setConfig} showToast={showToast} />}
       </div>
     </div>
   );
@@ -677,6 +832,9 @@ function Productos({ productos, setProductos, showToast }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {productos.map((p) => (
           <div key={p.id} style={styles.productRow}>
+            {p.imagen
+              ? <img src={p.imagen} alt={p.nombre} style={styles.thumb} />
+              : <div style={{ ...styles.thumb, ...styles.thumbPlaceholder }}>🍺</div>}
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 700 }}>{p.nombre} {p.activo === false && <span style={{ color: "#B91C1C", fontSize: 11 }}>(inactivo)</span>}</div>
               <div style={{ fontSize: 12, color: "#B08968" }}>{p.marca} · {CATS.find((c) => c.id === p.categoria)?.label} · {p.tamano}</div>
@@ -700,11 +858,45 @@ function ProductoForm({ producto, onClose, onSave }) {
   const [precioGs, setPrecioGs] = useState(producto?.precioGs ?? "");
   const [precioBRL, setPrecioBRL] = useState(producto?.precioBRL ?? "");
   const [activo, setActivo] = useState(producto?.activo !== false);
+  const [imagen, setImagen] = useState(producto?.imagen || "");
+  const [subiendo, setSubiendo] = useState(false);
+  const [errorImg, setErrorImg] = useState("");
   const valido = nombre.trim() && precioGs !== "" && precioBRL !== "";
+
+  const elegirFoto = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // permite volver a elegir el mismo archivo si hace falta
+    if (!file) return;
+    if (!/^image\/(jpe?g)$/i.test(file.type)) { setErrorImg("Elegí una foto en formato JPG."); return; }
+    setErrorImg(""); setSubiendo(true);
+    try {
+      const base64 = await resizeImageToBase64(file);
+      setImagen(base64);
+    } catch (err) {
+      setErrorImg("No se pudo procesar la foto. Probá con otra.");
+    } finally {
+      setSubiendo(false);
+    }
+  };
 
   return (
     <ModalWrap onClose={onClose} title={producto ? "Editar producto" : "Nuevo producto"}>
-      <label style={styles.label}>Nombre</label>
+      <label style={styles.label}>Foto del producto (JPG)</label>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
+        {imagen
+          ? <img src={imagen} alt="Vista previa" style={{ ...styles.thumb, width: 64, height: 64 }} />
+          : <div style={{ ...styles.thumb, ...styles.thumbPlaceholder, width: 64, height: 64, fontSize: 24 }}>🍺</div>}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <label style={{ ...styles.secondaryButton, textAlign: "center", display: "inline-block" }}>
+            {subiendo ? "Procesando…" : imagen ? "Cambiar foto" : "Elegir foto"}
+            <input type="file" accept="image/jpeg,image/jpg" onChange={elegirFoto} style={{ display: "none" }} />
+          </label>
+          {imagen && <button style={{ ...styles.secondaryButton, color: "#B91C1C", borderColor: "#B91C1C" }} onClick={() => setImagen("")}>Quitar foto</button>}
+        </div>
+      </div>
+      {errorImg && <p style={{ color: "#B91C1C", fontSize: 12, marginBottom: 8 }}>{errorImg}</p>}
+
+      <label style={{ ...styles.label, marginTop: 12 }}>Nombre</label>
       <input style={styles.input} value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ej: Chop Brahma 300ml" />
       <label style={{ ...styles.label, marginTop: 12 }}>Marca</label>
       <input style={styles.input} value={marca} onChange={(e) => setMarca(e.target.value)} placeholder="Ej: Brahma" />
@@ -721,11 +913,105 @@ function ProductoForm({ producto, onClose, onSave }) {
       <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
         <input type="checkbox" checked={activo} onChange={(e) => setActivo(e.target.checked)} /> Activo (visible para la venta)
       </label>
-      <button style={{ ...styles.primaryButton, marginTop: 16 }} disabled={!valido}
-        onClick={() => onSave({ id: producto?.id, nombre: nombre.trim(), marca: marca.trim(), categoria, tamano: tamano.trim(), precioGs: Number(precioGs), precioBRL: Number(precioBRL), activo })}>
+      <button style={{ ...styles.primaryButton, marginTop: 16 }} disabled={!valido || subiendo}
+        onClick={() => onSave({ id: producto?.id, nombre: nombre.trim(), marca: marca.trim(), categoria, tamano: tamano.trim(), precioGs: Number(precioGs), precioBRL: Number(precioBRL), activo, imagen })}>
         Guardar
       </button>
     </ModalWrap>
+  );
+}
+
+// ================= USUARIOS (cajeros + contraseña admin) =================
+function Usuarios({ usuarios, setUsuarios, config, setConfig, showToast }) {
+  const [editing, setEditing] = useState(null);
+
+  const save = (data) => {
+    if (data.id) setUsuarios(usuarios.map((u) => (u.id === data.id ? data : u)));
+    else setUsuarios([...usuarios, { ...data, id: uid() }]);
+    setEditing(null);
+    showToast("Usuario guardado");
+  };
+  const remove = (id) => { setUsuarios(usuarios.filter((u) => u.id !== id)); showToast("Usuario eliminado"); };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <SectionTitle>Cajeros ({usuarios.length})</SectionTitle>
+        <button style={styles.secondaryButton} onClick={() => setEditing("new")}>➕ Nuevo</button>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {usuarios.map((u) => (
+          <div key={u.id} style={styles.productRow}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 700 }}>👤 {u.nombre} {u.activo === false && <span style={{ color: "#B91C1C", fontSize: 11 }}>(inactivo)</span>}</div>
+              <div style={{ fontSize: 12, color: "#B08968" }}>PIN: {u.pin}</div>
+            </div>
+            <button style={styles.iconButtonSm} onClick={() => setEditing(u)}>✎</button>
+            <button style={{ ...styles.iconButtonSm, color: "#B91C1C" }} onClick={() => remove(u.id)}>🗑</button>
+          </div>
+        ))}
+        {usuarios.length === 0 && <p style={{ color: "#B08968" }}>Todavía no creaste ningún cajero.</p>}
+      </div>
+      {editing && <UsuarioForm usuario={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSave={save} />}
+
+      <SectionTitle>Contraseña de administrador</SectionTitle>
+      <CambiarPasswordAdmin config={config} setConfig={setConfig} showToast={showToast} />
+    </div>
+  );
+}
+
+function UsuarioForm({ usuario, onClose, onSave }) {
+  const [nombre, setNombre] = useState(usuario?.nombre || "");
+  const [pin, setPin] = useState(usuario?.pin || "");
+  const [activo, setActivo] = useState(usuario?.activo !== false);
+  const valido = nombre.trim() && pin.length === 4;
+
+  return (
+    <ModalWrap onClose={onClose} title={usuario ? "Editar cajero" : "Nuevo cajero"}>
+      <label style={styles.label}>Nombre del cajero</label>
+      <input style={styles.input} value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ej: Marcos" autoFocus />
+      <label style={{ ...styles.label, marginTop: 12 }}>PIN de 4 dígitos</label>
+      <input style={{ ...styles.input, letterSpacing: 4 }} inputMode="numeric" maxLength={4}
+        value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="0000" />
+      <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
+        <input type="checkbox" checked={activo} onChange={(e) => setActivo(e.target.checked)} /> Activo (puede iniciar sesión)
+      </label>
+      <button style={{ ...styles.primaryButton, marginTop: 16 }} disabled={!valido}
+        onClick={() => onSave({ id: usuario?.id, nombre: nombre.trim(), pin, activo })}>
+        Guardar
+      </button>
+    </ModalWrap>
+  );
+}
+
+function CambiarPasswordAdmin({ config, setConfig, showToast }) {
+  const [actual, setActual] = useState("");
+  const [nueva, setNueva] = useState("");
+  const [confirmar, setConfirmar] = useState("");
+  const [error, setError] = useState("");
+
+  const guardar = async () => {
+    if (actual !== config?.adminPassword) { setError("La contraseña actual no es correcta."); return; }
+    if (nueva.length < 4) { setError("La nueva contraseña debe tener al menos 4 caracteres."); return; }
+    if (nueva !== confirmar) { setError("Las contraseñas nuevas no coinciden."); return; }
+    await setConfig({ ...config, adminPassword: nueva });
+    setActual(""); setNueva(""); setConfirmar(""); setError("");
+    showToast("Contraseña actualizada");
+  };
+
+  return (
+    <div style={styles.card}>
+      <label style={styles.label}>Contraseña actual</label>
+      <input style={styles.input} type="password" value={actual} onChange={(e) => setActual(e.target.value)} />
+      <label style={{ ...styles.label, marginTop: 12 }}>Nueva contraseña</label>
+      <input style={styles.input} type="password" value={nueva} onChange={(e) => setNueva(e.target.value)} />
+      <label style={{ ...styles.label, marginTop: 12 }}>Repetir nueva contraseña</label>
+      <input style={styles.input} type="password" value={confirmar} onChange={(e) => setConfirmar(e.target.value)} />
+      {error && <p style={{ color: "#B91C1C", fontSize: 12, marginTop: 8 }}>{error}</p>}
+      <button style={{ ...styles.primaryButton, marginTop: 16 }} disabled={!actual || !nueva || !confirmar} onClick={guardar}>
+        Actualizar contraseña
+      </button>
+    </div>
   );
 }
 
@@ -888,6 +1174,9 @@ const styles = {
   reportGrid: { display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10, marginBottom: 8 },
   statBox: { background: "#fff", border: "1px solid #E7DCC9", borderRadius: 10, padding: 12 },
   productRow: { display: "flex", alignItems: "center", gap: 8, background: "#fff", border: "1px solid #E7DCC9", borderRadius: 10, padding: 10, textAlign: "left" },
+  thumb: { width: 44, height: 44, borderRadius: 8, objectFit: "cover", flexShrink: 0, border: "1px solid #E7DCC9" },
+  thumbPlaceholder: { display: "flex", alignItems: "center", justifyContent: "center", background: "#FAF6EE", color: "#D8C7A8" },
+  productImg: { width: "100%", height: 80, borderRadius: 8, objectFit: "cover", marginBottom: 6, display: "flex", alignItems: "center", justifyContent: "center" },
   table: { width: "100%", borderCollapse: "collapse", fontSize: 12, background: "#fff", borderRadius: 10, overflow: "hidden" },
   th: { textAlign: "left", padding: "8px 10px", background: "#292118", color: "#fff", fontWeight: 600 },
   td: { padding: "8px 10px", borderBottom: "1px solid #F3ECDD" },
