@@ -28,7 +28,9 @@ function resizeImageToBase64(file, maxDim = 220, quality = 0.6) {
         const canvas = document.createElement("canvas");
         canvas.width = width; canvas.height = height;
         canvas.getContext("2d").drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL("image/jpeg", quality));
+        // El PNG se mantiene como PNG (conserva transparencia); todo lo demás se guarda como JPG.
+        const outMime = file.type === "image/png" ? "image/png" : "image/jpeg";
+        resolve(canvas.toDataURL(outMime, outMime === "image/jpeg" ? quality : undefined));
       };
       img.src = reader.result;
     };
@@ -181,7 +183,7 @@ function App() {
       {toast && <div style={styles.toast}>{toast}</div>}
 
       {view === "home" && (
-        <Home onOperador={() => setView("operador-login")} onBackOffice={() => setView("admin-gate")} />
+        <Home config={config} onOperador={() => setView("operador-login")} onBackOffice={() => setView("admin-gate")} />
       )}
 
       {view === "admin-gate" && (
@@ -275,11 +277,13 @@ function App() {
 }
 
 // ================= HOME =================
-function Home({ onOperador, onBackOffice }) {
+function Home({ config, onOperador, onBackOffice }) {
   return (
     <div style={styles.centerScreen}>
       <div style={{ textAlign: "center", marginBottom: 40 }}>
-        <div style={{ fontSize: 52 }}>🍺</div>
+        {config?.logo
+          ? <img src={config.logo} alt="Logo" style={{ maxWidth: 140, maxHeight: 140, objectFit: "contain" }} />
+          : <div style={{ fontSize: 52 }}>🍺</div>}
         <h1 style={styles.h1}>Tap Control</h1>
         <p style={styles.subtitle}>Sistema de ventas para chopería</p>
       </div>
@@ -727,6 +731,7 @@ function BackOffice({ onBack, productos, setProductos, cajas, ventas, movimiento
         <TabBtn active={tab === "turnos"} label="Turnos" emoji="📋" onClick={() => setTab("turnos")} />
         <TabBtn active={tab === "movimientos"} label="Movimientos" emoji="🔁" onClick={() => setTab("movimientos")} />
         <TabBtn active={tab === "usuarios"} label="Usuarios" emoji="👤" onClick={() => setTab("usuarios")} />
+        <TabBtn active={tab === "config"} label="Configuración" emoji="🎨" onClick={() => setTab("config")} />
       </div>
       <div style={{ padding: "0 16px 32px" }}>
         {tab === "reportes" && <Reportes ventas={ventas} cajas={cajas} productos={productos} />}
@@ -734,6 +739,7 @@ function BackOffice({ onBack, productos, setProductos, cajas, ventas, movimiento
         {tab === "turnos" && <Turnos cajas={cajas} ventas={ventas} movimientos={movimientos} />}
         {tab === "movimientos" && <MovimientosHistorial movimientos={movimientos} />}
         {tab === "usuarios" && <Usuarios usuarios={usuarios} setUsuarios={setUsuarios} config={config} setConfig={setConfig} showToast={showToast} />}
+        {tab === "config" && <Configuracion config={config} setConfig={setConfig} showToast={showToast} />}
       </div>
     </div>
   );
@@ -867,7 +873,7 @@ function ProductoForm({ producto, onClose, onSave }) {
     const file = e.target.files?.[0];
     e.target.value = ""; // permite volver a elegir el mismo archivo si hace falta
     if (!file) return;
-    if (!/^image\/(jpe?g)$/i.test(file.type)) { setErrorImg("Elegí una foto en formato JPG."); return; }
+    if (!/^image\/(jpe?g|png)$/i.test(file.type)) { setErrorImg("Elegí una foto en formato JPG o PNG."); return; }
     setErrorImg(""); setSubiendo(true);
     try {
       const base64 = await resizeImageToBase64(file);
@@ -881,7 +887,7 @@ function ProductoForm({ producto, onClose, onSave }) {
 
   return (
     <ModalWrap onClose={onClose} title={producto ? "Editar producto" : "Nuevo producto"}>
-      <label style={styles.label}>Foto del producto (JPG)</label>
+      <label style={styles.label}>Foto del producto (JPG o PNG)</label>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
         {imagen
           ? <img src={imagen} alt="Vista previa" style={{ ...styles.thumb, width: 64, height: 64 }} />
@@ -889,7 +895,7 @@ function ProductoForm({ producto, onClose, onSave }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <label style={{ ...styles.secondaryButton, textAlign: "center", display: "inline-block" }}>
             {subiendo ? "Procesando…" : imagen ? "Cambiar foto" : "Elegir foto"}
-            <input type="file" accept="image/jpeg,image/jpg" onChange={elegirFoto} style={{ display: "none" }} />
+            <input type="file" accept="image/jpeg,image/jpg,image/png" onChange={elegirFoto} style={{ display: "none" }} />
           </label>
           {imagen && <button style={{ ...styles.secondaryButton, color: "#B91C1C", borderColor: "#B91C1C" }} onClick={() => setImagen("")}>Quitar foto</button>}
         </div>
@@ -918,6 +924,58 @@ function ProductoForm({ producto, onClose, onSave }) {
         Guardar
       </button>
     </ModalWrap>
+  );
+}
+
+// ================= CONFIGURACIÓN (logo del negocio) =================
+function Configuracion({ config, setConfig, showToast }) {
+  const [subiendo, setSubiendo] = useState(false);
+  const [error, setError] = useState("");
+
+  const elegirLogo = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!/^image\/(jpe?g|png)$/i.test(file.type)) { setError("Elegí una imagen en formato JPG o PNG."); return; }
+    setError(""); setSubiendo(true);
+    try {
+      const base64 = await resizeImageToBase64(file, 480, 0.85);
+      await setConfig({ ...config, logo: base64 });
+      showToast("Logo actualizado");
+    } catch (err) {
+      setError("No se pudo procesar la imagen. Probá con otra.");
+    } finally {
+      setSubiendo(false);
+    }
+  };
+
+  const quitarLogo = async () => {
+    await setConfig({ ...config, logo: "" });
+    showToast("Logo quitado");
+  };
+
+  return (
+    <div>
+      <SectionTitle>Logo del negocio</SectionTitle>
+      <div style={styles.card}>
+        <p style={{ color: "#7C5E3C", fontSize: 13, marginBottom: 12 }}>
+          Este logo aparece en la pantalla de inicio, en lugar del ícono de chop 🍺. Se acepta JPG o PNG (si tiene fondo transparente, se conserva).
+        </p>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          {config?.logo
+            ? <img src={config.logo} alt="Logo actual" style={{ width: 72, height: 72, borderRadius: 12, objectFit: "contain", border: "1px solid #E7DCC9", background: "#fff" }} />
+            : <div style={{ ...styles.thumb, ...styles.thumbPlaceholder, width: 72, height: 72, fontSize: 28 }}>🍺</div>}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <label style={{ ...styles.secondaryButton, textAlign: "center", display: "inline-block" }}>
+              {subiendo ? "Procesando…" : config?.logo ? "Cambiar logo" : "Subir logo"}
+              <input type="file" accept="image/jpeg,image/jpg,image/png" onChange={elegirLogo} style={{ display: "none" }} />
+            </label>
+            {config?.logo && <button style={{ ...styles.secondaryButton, color: "#B91C1C", borderColor: "#B91C1C" }} onClick={quitarLogo}>Quitar logo</button>}
+          </div>
+        </div>
+        {error && <p style={{ color: "#B91C1C", fontSize: 12, marginTop: 8 }}>{error}</p>}
+      </div>
+    </div>
   );
 }
 
