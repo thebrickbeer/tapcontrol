@@ -4,7 +4,16 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>Tap Control · Sistema de ventas</title>
-<link rel="icon" href="data:," />
+<link rel="icon" href="icon-192.png" />
+
+<!-- PWA: permite "Instalar" la app en el celular -->
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#292118" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Tap Control" />
+
 <style>
   html, body { margin: 0; padding: 0; background: #FAF6EE; }
 </style>
@@ -27,5 +36,12 @@
 
   <!-- 2) Lógica de la app -->
   <script type="text/babel" data-presets="react" src="app.js"></script>
+
+  <!-- 3) Habilita "Instalar app" en el celular (no guarda caché, ver sw.js) -->
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => navigator.serviceWorker.register("sw.js"));
+    }
+  </script>
 </body>
 </html>
