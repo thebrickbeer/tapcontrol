@@ -64,6 +64,25 @@ function construirLineasTicketVenta(venta, config) {
   return L;
 }
 
+// Arma las líneas del comprobante de apertura de caja, listas para mandar al servidor de impresión.
+function construirLineasApertura(caja, config) {
+  const nombreNegocio = config?.nombreNegocio?.trim() || "TAP CONTROL";
+  return [
+    { text: nombreNegocio, bold: true, big: true, align: "center" },
+    { text: "Apertura de caja", align: "center" },
+    { text: "................................" },
+    { text: `Empleado: ${caja.operador}` },
+    { text: `Fecha: ${fmtDateTime(caja.fechaApertura)}` },
+    { text: "................................" },
+    { text: filaTicket("Apertura Gs", fmtGs(caja.aperturaGs)), bold: true },
+    { text: filaTicket("Apertura R$", fmtBRL(caja.aperturaBRL)), bold: true },
+    { text: "" },
+    { text: "Verificá que estos montos sean", align: "center" },
+    { text: "correctos antes de vender.", align: "center" },
+    { text: "" },
+  ];
+}
+
 // Achica una foto (File) y la devuelve como texto base64 listo para guardar.
 // maxDim = tamaño máximo en píxeles del lado más largo. quality = calidad JPG (0 a 1).
 function resizeImageToBase64(file, maxDim = 220, quality = 0.6) {
@@ -107,7 +126,7 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "1.9.1";
+const APP_VERSION = "1.9.2";
 const APP_VERSION_FECHA = "12/07/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
@@ -292,24 +311,7 @@ function App() {
             setActiveCajaId(caja.id);
             setView("pos");
             showToast("Caja abierta correctamente");
-            const nombreNegocio = config?.nombreNegocio?.trim() || "TAP CONTROL";
-            const ok = await imprimirDirecto({
-              lines: [
-                { text: nombreNegocio, bold: true, big: true, align: "center" },
-                { text: "Apertura de caja", align: "center" },
-                { text: "................................" },
-                { text: `Empleado: ${operador}` },
-                { text: `Fecha: ${fmtDateTime(caja.fechaApertura)}` },
-                { text: "................................" },
-                { text: filaTicket("Apertura Gs", fmtGs(aperturaGs)), bold: true },
-                { text: filaTicket("Apertura R$", fmtBRL(aperturaBRL)), bold: true },
-                { text: "" },
-                { text: "Verificá que estos montos sean", align: "center" },
-                { text: "correctos antes de vender.", align: "center" },
-                { text: "" },
-              ],
-              logo: config?.logo,
-            });
+            const ok = await imprimirDirecto({ lines: construirLineasApertura(caja, config), logo: config?.logo });
             if (!ok) showToast("⚠️ No se pudo imprimir el comprobante de apertura.");
           }}
         />
@@ -557,6 +559,11 @@ function POS({ caja, productos, onSalir, onVenta, onMovimiento, onIrACierre, sho
           <div style={{ fontSize: 12, color: "#B08968" }}>Turno desde {fmtDateTime(caja.fechaApertura)}</div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
+          <button style={styles.iconButton} title="Reimprimir apertura"
+            onClick={async () => {
+              const ok = await imprimirDirecto({ lines: construirLineasApertura(caja, config), logo: config?.logo });
+              showToast(ok ? "Comprobante de apertura reenviado" : "⚠️ No se pudo imprimir. Revisá el servidor de impresión.");
+            }}>🖨</button>
           <button style={styles.iconButton} title="Movimiento de caja" onClick={() => setShowMov(true)}>🔁</button>
           <button style={styles.iconButton} title="Cerrar caja" onClick={onIrACierre}>📋</button>
           <button style={styles.iconButton} title="Salir" onClick={onSalir}>🚪</button>

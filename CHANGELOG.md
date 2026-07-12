@@ -4,6 +4,9 @@ Acá queda el registro de todos los cambios importantes del sistema, en orden, c
 
 ---
 
+## v1.9.2 — 12/07/2026
+- Nuevo botón 🖨 en la pantalla de venta (POS) para que el cajero pueda reimprimir el comprobante de apertura en cualquier momento mientras su caja sigue abierta (antes solo se podía reimprimir el cierre).
+
 ## v1.9.1 — 12/07/2026
 - El ticket de cierre de caja ahora incluye el detalle de cada movimiento (ingreso/retiro) del turno, con la hora exacta y la observación cargada. Si no hubo movimientos, esa sección no aparece.
 
