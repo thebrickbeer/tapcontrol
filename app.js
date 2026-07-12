@@ -105,7 +105,7 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "1.8.1";
+const APP_VERSION = "1.8.2";
 const APP_VERSION_FECHA = "12/07/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
@@ -1482,8 +1482,8 @@ const styles = {
   cartRow: { display: "flex", alignItems: "center", gap: 6, padding: "6px 0", borderBottom: "1px solid #F3ECDD" },
   qtyBtn: { width: 26, height: 26, borderRadius: 8, border: "1px solid #E7DCC9", background: "#FAF6EE", display: "flex", alignItems: "center", justifyContent: "center" },
   toast: { position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)", background: "#292118", color: "#fff", padding: "10px 18px", borderRadius: 10, fontSize: 13, zIndex: 999 },
-  modalOverlay: { position: "fixed", inset: 0, background: "rgba(41,33,24,0.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 100 },
-  modal: { background: "#fff", borderRadius: "18px 18px 0 0", padding: 20, width: "100%", maxWidth: 460, maxHeight: "88vh", overflowY: "auto" },
+  modalOverlay: { position: "fixed", inset: 0, background: "rgba(41,33,24,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 },
+  modal: { background: "#fff", borderRadius: 18, padding: 20, width: "100%", maxWidth: 460, maxHeight: "88vh", overflowY: "auto" },
   totalBox: { display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FAF6EE", borderRadius: 10, padding: "12px 14px", fontSize: 16 },
   ticket: { background: "#FEFCF8", border: "1px dashed #D8C7A8", borderRadius: 8, padding: 14, fontFamily: "monospace", fontSize: 12 },
   ticketHr: { border: "none", borderTop: "1px dashed #D8C7A8", margin: "6px 0" },

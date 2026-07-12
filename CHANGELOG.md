@@ -4,6 +4,9 @@ Acá queda el registro de todos los cambios importantes del sistema, en orden, c
 
 ---
 
+## v1.8.2 — 12/07/2026
+- Todas las ventanas emergentes (Cobrar venta, movimientos, formularios, etc.) ahora aparecen centradas en la pantalla, en vez de pegadas abajo.
+
 ## v1.8.1 — 12/07/2026
 - Se corrige que la fecha y el número de ticket quedaban cortados al final del papel (se aumentó el avance de papel antes del corte).
 - Más espacio entre el "Total" y la línea del método de pago, para que se lea mejor.
