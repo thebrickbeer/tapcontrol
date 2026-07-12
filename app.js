@@ -13,14 +13,14 @@ const todayStr = () => new Date().toISOString().slice(0, 10);
 const dayOf = (iso) => iso.slice(0, 10);
 
 // Intenta mandar el ticket directo al servidor de impresión local (sin diálogo de Windows).
-// Si no está prendido o falla, devuelve false para que la app use el método de respaldo (window.print).
-async function imprimirDirecto(lines, cortar = true) {
+// Si no está prendido o falla, devuelve false para que la app avise con un cartel de advertencia.
+async function imprimirDirecto({ lines, logo, cortar = true }) {
   try {
     const res = await fetch("http://localhost:5555/imprimir", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ lines, cortar }),
-      signal: AbortSignal.timeout(3000),
+      body: JSON.stringify({ lines, logo: logo || null, cortar }),
+      signal: AbortSignal.timeout(8000),
     });
     const data = await res.json();
     return !!data.ok;
@@ -29,25 +29,35 @@ async function imprimirDirecto(lines, cortar = true) {
   }
 }
 
+// Arma una línea con dos columnas: texto a la izquierda, texto a la derecha, alineados con espacios,
+// tal como se ve en una impresora térmica (fuente monoespaciada). ANCHO_TICKET = caracteres por línea.
+const ANCHO_TICKET = 42;
+function filaTicket(izq, der, ancho = ANCHO_TICKET) {
+  izq = String(izq); der = String(der);
+  const espacios = Math.max(1, ancho - izq.length - der.length);
+  return izq + " ".repeat(espacios) + der;
+}
+
 // Arma las líneas del ticket de venta, listas para mandar al servidor de impresión.
-function construirLineasTicketVenta(venta) {
+function construirLineasTicketVenta(venta, config) {
+  const nombreNegocio = config?.nombreNegocio?.trim() || "TAP CONTROL";
   const L = [];
-  L.push({ text: "TAP CONTROL", bold: true, align: "center" });
-  L.push({ text: "Comprobante de venta", align: "center" });
-  L.push({ text: `Ticket N ${String(venta.numero ?? "-").padStart(6, "0")}`, bold: true, align: "center" });
-  L.push({ text: "--------------------------------" });
-  L.push({ text: `Fecha: ${fmtDateTime(venta.fecha)}` });
-  L.push({ text: `Operador: ${venta.operador}` });
-  L.push({ text: `Pago: ${venta.metodoPago}` });
-  L.push({ text: "--------------------------------" });
-  venta.items.forEach((i) => {
-    L.push({ text: i.nombre });
-    L.push({ text: `  ${i.qty} x ${fmtMoney(i.precioUnit, venta.moneda)}  =  ${fmtMoney(i.subtotal, venta.moneda)}` });
-  });
-  L.push({ text: "--------------------------------" });
-  L.push({ text: `TOTAL: ${fmtMoney(venta.total, venta.moneda)}`, bold: true, big: true });
+  L.push({ text: nombreNegocio, bold: true, big: true, align: "center" });
+  if (config?.direccion?.trim()) L.push({ text: config.direccion.trim(), align: "center" });
   L.push({ text: "" });
-  L.push({ text: "Gracias por su compra!", align: "center" });
+  L.push({ text: `Empleado: ${venta.operador}` });
+  L.push({ text: "................................" });
+  venta.items.forEach((i) => {
+    L.push({ text: filaTicket(i.nombre, fmtMoney(i.subtotal, venta.moneda)) });
+    L.push({ text: `  ${i.qty} x ${fmtMoney(i.precioUnit, venta.moneda)}` });
+  });
+  L.push({ text: "................................" });
+  L.push({ text: filaTicket("Total", fmtMoney(venta.total, venta.moneda)), bold: true, big: true });
+  L.push({ text: filaTicket(venta.metodoPago === "efectivo" ? "Efectivo" : "Tarjeta", fmtMoney(venta.total, venta.moneda)) });
+  L.push({ text: "................................" });
+  L.push({ text: "Gracias por su preferencia", align: "center" });
+  L.push({ text: "" });
+  L.push({ text: filaTicket(fmtDateTime(venta.fecha), `#${String(venta.numero ?? "-").padStart(4, "0")}`) });
   return L;
 }
 
@@ -94,8 +104,8 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "1.7.0";
-const APP_VERSION_FECHA = "10/07/2026";
+const APP_VERSION = "1.8.0";
+const APP_VERSION_FECHA = "12/07/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
 }
@@ -292,6 +302,7 @@ function App() {
           onMovimiento={async (mov) => { await persistMovimientos([...movimientos, mov]); showToast("Movimiento registrado"); }}
           onIrACierre={() => setView("cierre")}
           showToast={showToast}
+          config={config}
         />
       )}
 
@@ -314,6 +325,7 @@ function App() {
           }}
           onFinalizar={() => { setView("home"); setOperador(""); setActiveCajaId(null); }}
           showToast={showToast}
+          config={config}
         />
       )}
 
@@ -493,7 +505,7 @@ function Apertura({ operador, onBack, onAbrir }) {
 }
 
 // ================= POS =================
-function POS({ caja, productos, onSalir, onVenta, onMovimiento, onIrACierre, showToast }) {
+function POS({ caja, productos, onSalir, onVenta, onMovimiento, onIrACierre, showToast, config }) {
   const [catFiltro, setCatFiltro] = useState("todos");
   const [cart, setCart] = useState([]);
   const [showCheckout, setShowCheckout] = useState(false);
@@ -586,7 +598,7 @@ function POS({ caja, productos, onSalir, onVenta, onMovimiento, onIrACierre, sho
             setShowCheckout(false);
             setTicket(venta);
             setCart([]);
-            const ok = await imprimirDirecto(construirLineasTicketVenta(venta));
+            const ok = await imprimirDirecto({ lines: construirLineasTicketVenta(venta, config), logo: config?.logo });
             if (!ok) showToast("⚠️ No se pudo imprimir. Revisá que el servidor de impresión esté prendido.");
           }}
         />
@@ -599,7 +611,7 @@ function POS({ caja, productos, onSalir, onVenta, onMovimiento, onIrACierre, sho
         />
       )}
 
-      {ticket && <TicketVenta venta={ticket} caja={caja} onClose={() => setTicket(null)} showToast={showToast} />}
+      {ticket && <TicketVenta venta={ticket} caja={caja} onClose={() => setTicket(null)} showToast={showToast} config={config} />}
     </div>
   );
 }
@@ -668,9 +680,9 @@ function MovimientoModal({ onClose, onConfirm }) {
   );
 }
 
-function TicketVenta({ venta, caja, onClose, showToast }) {
+function TicketVenta({ venta, caja, onClose, showToast, config }) {
   const reimprimir = async () => {
-    const ok = await imprimirDirecto(construirLineasTicketVenta(venta));
+    const ok = await imprimirDirecto({ lines: construirLineasTicketVenta(venta, config), logo: config?.logo });
     showToast(ok ? "Ticket reenviado a la impresora" : "⚠️ No se pudo imprimir. Revisá que el servidor de impresión esté prendido.");
   };
 
@@ -704,7 +716,7 @@ function TicketVenta({ venta, caja, onClose, showToast }) {
 }
 
 // ================= CIERRE DE CAJA =================
-function Cierre({ caja, ventas, movimientos, onBack, onCerrar, onFinalizar, showToast }) {
+function Cierre({ caja, ventas, movimientos, onBack, onCerrar, onFinalizar, showToast, config }) {
   const [cerrada, setCerrada] = useState(caja.estado === "cerrada");
   const [contadoGs, setContadoGs] = useState("");
   const [contadoBrl, setContadoBrl] = useState("");
@@ -768,18 +780,22 @@ function Cierre({ caja, ventas, movimientos, onBack, onCerrar, onFinalizar, show
             <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
               <button style={styles.secondaryButton}
                 onClick={async () => {
-                  const ok = await imprimirDirecto([
-                    { text: "TAP CONTROL", bold: true, align: "center" },
-                    { text: "Comprobante de cierre de caja", align: "center" },
-                    { text: "--------------------------------" },
-                    { text: `Operador: ${caja.operador}` },
-                    { text: `Apertura: ${fmtDateTime(caja.fechaApertura)}` },
-                    { text: `Cierre: ${fmtDateTime(caja.fechaCierre)}` },
-                    { text: "--------------------------------" },
-                    { text: `Contado Gs: ${fmtGs(finalContadoGs)}` },
-                    { text: `Contado R$: ${fmtBRL(finalContadoBrl)}` },
-                    { text: "" },
-                  ]);
+                  const nombreNegocio = config?.nombreNegocio?.trim() || "TAP CONTROL";
+                  const ok = await imprimirDirecto({
+                    lines: [
+                      { text: nombreNegocio, bold: true, big: true, align: "center" },
+                      { text: "Cierre de caja", align: "center" },
+                      { text: "................................" },
+                      { text: `Empleado: ${caja.operador}` },
+                      { text: `Apertura: ${fmtDateTime(caja.fechaApertura)}` },
+                      { text: `Cierre: ${fmtDateTime(caja.fechaCierre)}` },
+                      { text: "................................" },
+                      { text: filaTicket("Contado Gs", fmtGs(finalContadoGs)) },
+                      { text: filaTicket("Contado R$", fmtBRL(finalContadoBrl)) },
+                      { text: "" },
+                    ],
+                    logo: config?.logo,
+                  });
                   if (!ok) showToast("⚠️ No se pudo imprimir. Revisá que el servidor de impresión esté prendido.");
                 }}>
                 🖨 Imprimir
@@ -1051,7 +1067,35 @@ function Configuracion({ config, setConfig, showToast }) {
         </div>
         {error && <p style={{ color: "#B91C1C", fontSize: 12, marginTop: 8 }}>{error}</p>}
       </div>
+
+      <DatosNegocio config={config} setConfig={setConfig} showToast={showToast} />
     </div>
+  );
+}
+
+function DatosNegocio({ config, setConfig, showToast }) {
+  const [nombreNegocio, setNombreNegocio] = useState(config?.nombreNegocio || "");
+  const [direccion, setDireccion] = useState(config?.direccion || "");
+
+  const guardar = async () => {
+    await setConfig({ ...config, nombreNegocio: nombreNegocio.trim(), direccion: direccion.trim() });
+    showToast("Datos del negocio actualizados");
+  };
+
+  return (
+    <>
+      <SectionTitle>Datos del negocio (para el ticket impreso)</SectionTitle>
+      <div style={styles.card}>
+        <label style={styles.label}>Nombre del negocio</label>
+        <input style={styles.input} value={nombreNegocio} onChange={(e) => setNombreNegocio(e.target.value)} placeholder="Ej: The Brick Beer Bar" />
+        <label style={{ ...styles.label, marginTop: 12 }}>Dirección (opcional)</label>
+        <input style={styles.input} value={direccion} onChange={(e) => setDireccion(e.target.value)} placeholder="Ej: Shopping Paris, Ciudad del Este" />
+        <p style={{ color: "#B08968", fontSize: 12, marginTop: 8 }}>
+          Si dejás el nombre vacío, el ticket va a mostrar "TAP CONTROL" por defecto.
+        </p>
+        <button style={{ ...styles.primaryButton, marginTop: 12 }} onClick={guardar}>Guardar</button>
+      </div>
+    </>
   );
 }
 
