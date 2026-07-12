@@ -9,6 +9,8 @@ const fmtBRL = (n) =>
 const fmtMoney = (n, cur) => (cur === "GS" ? fmtGs(n) : fmtBRL(n));
 const fmtDateTime = (iso) =>
   iso ? new Date(iso).toLocaleString("es-PY", { dateStyle: "short", timeStyle: "short" }) : "-";
+const fmtHora = (iso) =>
+  iso ? new Date(iso).toLocaleTimeString("es-PY", { timeStyle: "short" }) : "-";
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const dayOf = (iso) => iso.slice(0, 10);
 
@@ -105,7 +107,7 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "1.8.3";
+const APP_VERSION = "1.9.1";
 const APP_VERSION_FECHA = "12/07/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
@@ -290,6 +292,25 @@ function App() {
             setActiveCajaId(caja.id);
             setView("pos");
             showToast("Caja abierta correctamente");
+            const nombreNegocio = config?.nombreNegocio?.trim() || "TAP CONTROL";
+            const ok = await imprimirDirecto({
+              lines: [
+                { text: nombreNegocio, bold: true, big: true, align: "center" },
+                { text: "Apertura de caja", align: "center" },
+                { text: "................................" },
+                { text: `Empleado: ${operador}` },
+                { text: `Fecha: ${fmtDateTime(caja.fechaApertura)}` },
+                { text: "................................" },
+                { text: filaTicket("Apertura Gs", fmtGs(aperturaGs)), bold: true },
+                { text: filaTicket("Apertura R$", fmtBRL(aperturaBRL)), bold: true },
+                { text: "" },
+                { text: "Verificá que estos montos sean", align: "center" },
+                { text: "correctos antes de vender.", align: "center" },
+                { text: "" },
+              ],
+              logo: config?.logo,
+            });
+            if (!ok) showToast("⚠️ No se pudo imprimir el comprobante de apertura.");
           }}
         />
       )}
@@ -794,6 +815,19 @@ function Cierre({ caja, ventas, movimientos, onBack, onCerrar, onFinalizar, show
                       { text: filaTicket("Apertura Gs", fmtGs(caja.aperturaGs)) },
                       { text: filaTicket("Apertura R$", fmtBRL(caja.aperturaBRL)) },
                       { text: "................................" },
+                      ...(movimientos.length > 0
+                        ? [
+                            { text: "Movimientos de caja", bold: true },
+                            ...movimientos
+                              .slice()
+                              .sort((a, b) => new Date(a.fecha) - new Date(b.fecha))
+                              .flatMap((m) => [
+                                { text: filaTicket(`${fmtHora(m.fecha)} ${m.tipo === "ingreso" ? "Ingreso" : "Retiro"}`, fmtMoney(m.monto, m.moneda)) },
+                                ...(m.observacion ? [{ text: `  ${m.observacion}` }] : []),
+                              ]),
+                            { text: "................................" },
+                          ]
+                        : []),
                       { text: filaTicket("Contado Gs", fmtGs(finalContadoGs)), bold: true },
                       { text: filaTicket("Contado R$", fmtBRL(finalContadoBrl)), bold: true },
                       { text: "" },

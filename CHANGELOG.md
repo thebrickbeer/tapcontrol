@@ -4,6 +4,12 @@ Acá queda el registro de todos los cambios importantes del sistema, en orden, c
 
 ---
 
+## v1.9.1 — 12/07/2026
+- El ticket de cierre de caja ahora incluye el detalle de cada movimiento (ingreso/retiro) del turno, con la hora exacta y la observación cargada. Si no hubo movimientos, esa sección no aparece.
+
+## v1.9.0 — 12/07/2026
+- Al abrir una caja, ahora se imprime automáticamente un comprobante con los montos de apertura (Gs y R$) cargados, para verificar en el momento que estén correctos. Si hay un error, se puede corregir después desde Back Office → Turnos.
+
 ## v1.8.3 — 12/07/2026
 - El ticket de cierre de caja ahora también muestra los montos de Apertura (Gs y R$), alineados en columnas junto con el Contado.
 
