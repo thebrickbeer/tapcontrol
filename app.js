@@ -105,7 +105,7 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "1.8.2";
+const APP_VERSION = "1.8.3";
 const APP_VERSION_FECHA = "12/07/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
@@ -791,8 +791,11 @@ function Cierre({ caja, ventas, movimientos, onBack, onCerrar, onFinalizar, show
                       { text: `Apertura: ${fmtDateTime(caja.fechaApertura)}` },
                       { text: `Cierre: ${fmtDateTime(caja.fechaCierre)}` },
                       { text: "................................" },
-                      { text: filaTicket("Contado Gs", fmtGs(finalContadoGs)) },
-                      { text: filaTicket("Contado R$", fmtBRL(finalContadoBrl)) },
+                      { text: filaTicket("Apertura Gs", fmtGs(caja.aperturaGs)) },
+                      { text: filaTicket("Apertura R$", fmtBRL(caja.aperturaBRL)) },
+                      { text: "................................" },
+                      { text: filaTicket("Contado Gs", fmtGs(finalContadoGs)), bold: true },
+                      { text: filaTicket("Contado R$", fmtBRL(finalContadoBrl)), bold: true },
                       { text: "" },
                     ],
                     logo: config?.logo,

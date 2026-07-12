@@ -4,6 +4,9 @@ Acá queda el registro de todos los cambios importantes del sistema, en orden, c
 
 ---
 
+## v1.8.3 — 12/07/2026
+- El ticket de cierre de caja ahora también muestra los montos de Apertura (Gs y R$), alineados en columnas junto con el Contado.
+
 ## v1.8.2 — 12/07/2026
 - Todas las ventanas emergentes (Cobrar venta, movimientos, formularios, etc.) ahora aparecen centradas en la pantalla, en vez de pegadas abajo.
 
