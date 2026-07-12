@@ -53,6 +53,7 @@ function construirLineasTicketVenta(venta, config) {
   });
   L.push({ text: "................................" });
   L.push({ text: filaTicket("Total", fmtMoney(venta.total, venta.moneda)), bold: true, big: true });
+  L.push({ text: "" });
   L.push({ text: filaTicket(venta.metodoPago === "efectivo" ? "Efectivo" : "Tarjeta", fmtMoney(venta.total, venta.moneda)) });
   L.push({ text: "................................" });
   L.push({ text: "Gracias por su preferencia", align: "center" });
@@ -104,7 +105,7 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "1.8.0";
+const APP_VERSION = "1.8.1";
 const APP_VERSION_FECHA = "12/07/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });

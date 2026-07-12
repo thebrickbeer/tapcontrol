@@ -4,6 +4,10 @@ Acá queda el registro de todos los cambios importantes del sistema, en orden, c
 
 ---
 
+## v1.8.1 — 12/07/2026
+- Se corrige que la fecha y el número de ticket quedaban cortados al final del papel (se aumentó el avance de papel antes del corte).
+- Más espacio entre el "Total" y la línea del método de pago, para que se lea mejor.
+
 ## v1.8.0 — 12/07/2026
 - El ticket impreso ahora lleva el logo del negocio arriba (impreso como imagen real, no solo texto).
 - Nuevo campo "Nombre del negocio" y "Dirección" en Back Office → Configuración, usados en el encabezado del ticket.
