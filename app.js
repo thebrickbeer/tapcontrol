@@ -162,8 +162,8 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "2.1.1";
-const APP_VERSION_FECHA = "12/07/2026";
+const APP_VERSION = "2.1.2";
+const APP_VERSION_FECHA = "13/07/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
 }
@@ -984,7 +984,7 @@ function BackOffice({ onBack, productos, setProductos, cajas, setCajas, ventas, 
         )}
         {tab === "gastos" && <Gastos gastos={gastos} setGastos={setGastos} showToast={showToast} />}
         {tab === "turnos" && <Turnos cajas={cajas} setCajas={setCajas} ventas={ventas} movimientos={movimientos} showToast={showToast} />}
-        {tab === "ventas" && <VentasAdmin ventas={ventas} setVentas={setVentas} showToast={showToast} />}
+        {tab === "ventas" && <VentasAdmin ventas={ventas} setVentas={setVentas} productos={productos} showToast={showToast} />}
         {tab === "movimientos" && <MovimientosHistorial movimientos={movimientos} />}
         {tab === "usuarios" && <Usuarios usuarios={usuarios} setUsuarios={setUsuarios} config={config} setConfig={setConfig} showToast={showToast} />}
         {tab === "config" && <Configuracion config={config} setConfig={setConfig} showToast={showToast} />}
@@ -1631,8 +1631,9 @@ function Turnos({ cajas, setCajas, ventas, movimientos, showToast }) {
 }
 
 // ================= VENTAS (anular / cambiar método de pago) =================
-function VentasAdmin({ ventas, setVentas, showToast }) {
+function VentasAdmin({ ventas, setVentas, productos, showToast }) {
   const [anulando, setAnulando] = useState(null);
+  const [modificando, setModificando] = useState(null);
   const [busqueda, setBusqueda] = useState("");
 
   const ordenadas = [...ventas].sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
@@ -1640,10 +1641,10 @@ function VentasAdmin({ ventas, setVentas, showToast }) {
     ? ordenadas.filter((v) => String(v.numero ?? "").includes(busqueda.trim()) || v.operador.toLowerCase().includes(busqueda.trim().toLowerCase()))
     : ordenadas.slice(0, 100); // por defecto, últimas 100 para no saturar la pantalla
 
-  const cambiarPago = (venta) => {
-    const nuevo = venta.metodoPago === "efectivo" ? "tarjeta" : "efectivo";
-    setVentas(ventas.map((v) => (v.id === venta.id ? { ...v, metodoPago: nuevo } : v)));
-    showToast(`Ticket #${venta.numero ?? ""} → ahora figura como ${nuevo}`);
+  const guardarModificacion = (ventaModificada) => {
+    setVentas(ventas.map((v) => (v.id === ventaModificada.id ? ventaModificada : v)));
+    showToast(`Ticket #${ventaModificada.numero ?? ""} modificado`);
+    setModificando(null);
   };
 
   const confirmarAnular = () => {
@@ -1676,8 +1677,8 @@ function VentasAdmin({ ventas, setVentas, showToast }) {
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {!v.anulada ? (
                 <>
-                  <button style={styles.secondaryButton} onClick={() => cambiarPago(v)}>
-                    Cambiar a {v.metodoPago === "efectivo" ? "tarjeta" : "efectivo"}
+                  <button style={styles.secondaryButton} onClick={() => setModificando(v)}>
+                    Modificar
                   </button>
                   <button style={{ ...styles.secondaryButton, color: "#B91C1C", borderColor: "#B91C1C" }} onClick={() => setAnulando(v)}>
                     Anular
@@ -1691,6 +1692,15 @@ function VentasAdmin({ ventas, setVentas, showToast }) {
         ))}
         {filtradas.length === 0 && <p style={{ color: "#B08968" }}>No se encontraron ventas.</p>}
       </div>
+
+      {modificando && (
+        <ModificarVentaModal
+          venta={modificando}
+          productos={productos}
+          onClose={() => setModificando(null)}
+          onSave={guardarModificacion}
+        />
+      )}
 
       {anulando && (
         <ModalWrap onClose={() => setAnulando(null)} title="Anular ticket">
@@ -1707,6 +1717,68 @@ function VentasAdmin({ ventas, setVentas, showToast }) {
         </ModalWrap>
       )}
     </div>
+  );
+}
+
+function ModificarVentaModal({ venta, productos, onClose, onSave }) {
+  const [metodoPago, setMetodoPago] = useState(venta.metodoPago);
+  const [moneda, setMoneda] = useState(venta.moneda);
+
+  const guardar = () => {
+    let items = venta.items;
+    let total = venta.total;
+
+    if (moneda !== venta.moneda) {
+      // Al cambiar de moneda, recalculamos cada línea con el precio actual del producto
+      // en la nueva moneda (si el producto ya no existe, dejamos el monto anterior tal cual).
+      items = venta.items.map((it) => {
+        const producto = productos.find((p) => p.id === it.productId);
+        if (!producto) return it;
+        const precioUnit = moneda === "GS" ? producto.precioGs : producto.precioBRL;
+        return { ...it, precioUnit, subtotal: precioUnit * it.qty };
+      });
+      total = items.reduce((s, it) => s + it.subtotal, 0);
+    }
+
+    onSave({ ...venta, metodoPago, moneda, items, total });
+  };
+
+  const cambioDeMoneda = moneda !== venta.moneda;
+  const huboProductoNoEncontrado = cambioDeMoneda && venta.items.some((it) => !productos.find((p) => p.id === it.productId));
+
+  return (
+    <ModalWrap onClose={onClose} title={`Modificar ticket #${venta.numero ?? "-"}`}>
+      <label style={styles.label}>Moneda</label>
+      <div style={{ display: "flex", gap: 8 }}>
+        <ToggleBtn active={moneda === "GS"} label="Guaraníes ₲" onClick={() => setMoneda("GS")} />
+        <ToggleBtn active={moneda === "BRL"} label="Reales R$" onClick={() => setMoneda("BRL")} />
+      </div>
+
+      <label style={{ ...styles.label, marginTop: 12 }}>Método de pago</label>
+      <div style={{ display: "flex", gap: 8 }}>
+        <ToggleBtn active={metodoPago === "efectivo"} label="Efectivo" onClick={() => setMetodoPago("efectivo")} />
+        <ToggleBtn active={metodoPago === "tarjeta"} label="Tarjeta" onClick={() => setMetodoPago("tarjeta")} />
+      </div>
+
+      {cambioDeMoneda && (
+        <p style={{ color: "#B08968", fontSize: 12, marginTop: 12 }}>
+          Al cambiar la moneda, los precios de cada producto se recalculan con el precio actual cargado en esa moneda. El nuevo total sería: <b>{fmtMoney(
+            venta.items.reduce((s, it) => {
+              const producto = productos.find((p) => p.id === it.productId);
+              const precioUnit = producto ? (moneda === "GS" ? producto.precioGs : producto.precioBRL) : it.precioUnit;
+              return s + precioUnit * it.qty;
+            }, 0), moneda
+          )}</b>
+        </p>
+      )}
+      {huboProductoNoEncontrado && (
+        <p style={{ color: "#B91C1C", fontSize: 12, marginTop: 8 }}>
+          ⚠️ Algún producto de este ticket ya no existe en el catálogo — su monto se mantiene sin convertir.
+        </p>
+      )}
+
+      <button style={{ ...styles.primaryButton, marginTop: 16 }} onClick={guardar}>Guardar cambios</button>
+    </ModalWrap>
   );
 }
 

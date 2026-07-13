@@ -4,6 +4,9 @@ Acá queda el registro de todos los cambios importantes del sistema, en orden, c
 
 ---
 
+## v2.1.2 — 13/07/2026
+- En Back Office → Ventas, el botón "Cambiar a tarjeta/efectivo" se reemplaza por **"Modificar"**: abre una ventana donde se puede corregir tanto el método de pago (efectivo/tarjeta) como la moneda (Gs/R$) de un ticket ya cargado. Si se cambia la moneda, los precios se recalculan con el precio actual de cada producto en la nueva moneda.
+
 ## v2.1.1 — 12/07/2026
 - Los gastos ahora pueden cargarse como "Mensual" (ej: alquiler, sueldos): se reparten en partes iguales entre los días del mes que cubren, en vez de pegar de golpe en un solo día. Esto deja la base lista para el gráfico de punto de equilibrio del Dashboard (Entrega 3).
 
