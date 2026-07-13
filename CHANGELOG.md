@@ -4,6 +4,9 @@ Acá queda el registro de todos los cambios importantes del sistema, en orden, c
 
 ---
 
+## v2.1.0 — 12/07/2026
+- **Entrega 2 de costos y márgenes:** nueva pestaña "Gastos" en Back Office. Cargá alquiler, luz, agua, condominio, sueldos y otros gastos, cada uno con su propia fecha, para poder compararlos mes a mes. Muestra el total del período y un resumen por categoría.
+
 ## v2.0.1 — 12/07/2026
 - Ya no se asume que todo lo que es categoría "Chop" usa CO2 del tanque compartido: ahora es un tilde editable por producto (se sugiere destildado automáticamente para productos Heineken, pero se puede ajustar para cualquier producto). Esto también corrige el cálculo del costo estimado por vaso, que antes contaba de más.
 

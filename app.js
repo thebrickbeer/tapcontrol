@@ -162,7 +162,7 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "2.0.1";
+const APP_VERSION = "2.1.0";
 const APP_VERSION_FECHA = "12/07/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
@@ -190,6 +190,7 @@ function App() {
   const [usuarios, setUsuarios] = useState([]);
   const [config, setConfig] = useState(null);
   const [insumos, setInsumos] = useState([]);
+  const [gastos, setGastos] = useState([]);
   const [co2Cambios, setCo2Cambios] = useState([]);
   const [view, setView] = useState("home");
   const [operador, setOperador] = useState("");
@@ -204,7 +205,7 @@ function App() {
 
   useEffect(() => {
     let unsubs = [];
-    const flags = { productos: false, cajas: false, ventas: false, movimientos: false, usuarios: false, config: false, insumos: false, co2: false };
+    const flags = { productos: false, cajas: false, ventas: false, movimientos: false, usuarios: false, config: false, insumos: false, co2: false, gastos: false };
     const checkReady = () => {
       if (Object.values(flags).every(Boolean)) setReady(true);
     };
@@ -266,6 +267,12 @@ function App() {
           flags.co2 = true; checkReady();
         }, (e) => { console.error(e); setConnError(true); })
       );
+      unsubs.push(
+        coll().doc("gastos").onSnapshot((snap) => {
+          setGastos(snap.exists ? snap.data().items || [] : []);
+          flags.gastos = true; checkReady();
+        }, (e) => { console.error(e); setConnError(true); })
+      );
     });
 
     return () => { unsubAuth(); unsubs.forEach((u) => u()); };
@@ -279,6 +286,7 @@ function App() {
   const persistConfig = async (next) => { setConfig(next); await coll().doc("config").set(next); };
   const persistInsumos = async (next) => { setInsumos(next); await persist("insumos", next); };
   const persistCo2Cambios = async (next) => { setCo2Cambios(next); await persist("co2", next); };
+  const persistGastos = async (next) => { setGastos(next); await persist("gastos", next); };
 
   const activeCaja = cajas.find((c) => c.id === activeCajaId);
 
@@ -429,6 +437,8 @@ function App() {
           setInsumos={persistInsumos}
           co2Cambios={co2Cambios}
           setCo2Cambios={persistCo2Cambios}
+          gastos={gastos}
+          setGastos={persistGastos}
         />
       )}
     </div>
@@ -946,7 +956,7 @@ function Cierre({ caja, ventas, movimientos, onBack, onCerrar, onFinalizar, show
 }
 
 // ================= BACK OFFICE =================
-function BackOffice({ onBack, productos, setProductos, cajas, setCajas, ventas, setVentas, movimientos, usuarios, setUsuarios, config, setConfig, showToast, insumos, setInsumos, co2Cambios, setCo2Cambios }) {
+function BackOffice({ onBack, productos, setProductos, cajas, setCajas, ventas, setVentas, movimientos, usuarios, setUsuarios, config, setConfig, showToast, insumos, setInsumos, co2Cambios, setCo2Cambios, gastos, setGastos }) {
   const [tab, setTab] = useState("reportes");
   return (
     <div style={styles.boLayout}>
@@ -955,6 +965,7 @@ function BackOffice({ onBack, productos, setProductos, cajas, setCajas, ventas, 
         <TabBtn active={tab === "reportes"} label="Reportes" emoji="📊" onClick={() => setTab("reportes")} />
         <TabBtn active={tab === "productos"} label="Productos" emoji="🍺" onClick={() => setTab("productos")} />
         <TabBtn active={tab === "insumos"} label="Insumos" emoji="🧊" onClick={() => setTab("insumos")} />
+        <TabBtn active={tab === "gastos"} label="Gastos" emoji="💸" onClick={() => setTab("gastos")} />
         <TabBtn active={tab === "turnos"} label="Turnos" emoji="📋" onClick={() => setTab("turnos")} />
         <TabBtn active={tab === "ventas"} label="Ventas" emoji="🧾" onClick={() => setTab("ventas")} />
         <TabBtn active={tab === "movimientos"} label="Movimientos" emoji="🔁" onClick={() => setTab("movimientos")} />
@@ -971,6 +982,7 @@ function BackOffice({ onBack, productos, setProductos, cajas, setCajas, ventas, 
             ventas={ventas} productos={productos} showToast={showToast}
           />
         )}
+        {tab === "gastos" && <Gastos gastos={gastos} setGastos={setGastos} showToast={showToast} />}
         {tab === "turnos" && <Turnos cajas={cajas} setCajas={setCajas} ventas={ventas} movimientos={movimientos} showToast={showToast} />}
         {tab === "ventas" && <VentasAdmin ventas={ventas} setVentas={setVentas} showToast={showToast} />}
         {tab === "movimientos" && <MovimientosHistorial movimientos={movimientos} />}
@@ -1695,6 +1707,110 @@ function VentasAdmin({ ventas, setVentas, showToast }) {
         </ModalWrap>
       )}
     </div>
+  );
+}
+
+// ================= GASTOS (alquiler, luz, sueldos, condominio, etc.) =================
+const CATEGORIAS_GASTO = ["Alquiler", "Luz", "Agua", "Condominio", "Sueldos", "Insumos varios", "Otros"];
+
+function Gastos({ gastos, setGastos, showToast }) {
+  const [modo, setModo] = useState("mes");
+  const [desde, setDesde] = useState(todayStr());
+  const [hasta, setHasta] = useState(todayStr());
+  const [editing, setEditing] = useState(null);
+
+  let rangoDesde, rangoHasta;
+  const hoy = new Date();
+  if (modo === "hoy") { rangoDesde = todayStr(); rangoHasta = todayStr(); }
+  else if (modo === "mes") { rangoDesde = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-01`; rangoHasta = todayStr(); }
+  else { rangoDesde = desde; rangoHasta = hasta; }
+
+  const gastosFiltrados = gastos
+    .filter((g) => dayOf(g.fecha) >= rangoDesde && dayOf(g.fecha) <= rangoHasta)
+    .sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+
+  const totalPeriodo = gastosFiltrados.reduce((s, g) => s + g.monto, 0);
+  const porCategoria = {};
+  gastosFiltrados.forEach((g) => { porCategoria[g.categoria] = (porCategoria[g.categoria] || 0) + g.monto; });
+
+  const guardar = (data) => {
+    if (data.id) setGastos(gastos.map((g) => (g.id === data.id ? data : g)));
+    else setGastos([...gastos, { ...data, id: uid() }]);
+    setEditing(null);
+    showToast("Gasto guardado");
+  };
+  const borrar = (id) => { setGastos(gastos.filter((g) => g.id !== id)); showToast("Gasto eliminado"); };
+
+  return (
+    <div>
+      <SectionTitle>Período</SectionTitle>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        <ToggleBtn active={modo === "hoy"} label="Hoy" onClick={() => setModo("hoy")} />
+        <ToggleBtn active={modo === "mes"} label="Este mes" onClick={() => setModo("mes")} />
+        <ToggleBtn active={modo === "rango"} label="Rango" onClick={() => setModo("rango")} />
+      </div>
+      {modo === "rango" && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+          <input style={styles.input} type="date" value={desde} onChange={(e) => setDesde(e.target.value)} />
+          <input style={styles.input} type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} />
+        </div>
+      )}
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <SectionTitle>Total del período: {fmtGs(totalPeriodo)}</SectionTitle>
+        <button style={styles.secondaryButton} onClick={() => setEditing("new")}>➕ Nuevo gasto</button>
+      </div>
+
+      {Object.keys(porCategoria).length > 0 && (
+        <TableBox headers={["Categoría", "Total"]}
+          rows={Object.entries(porCategoria).sort((a, b) => b[1] - a[1]).map(([cat, monto]) => [cat, fmtGs(monto)])}
+          empty="" />
+      )}
+
+      <SectionTitle>Detalle</SectionTitle>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {gastosFiltrados.map((g) => (
+          <div key={g.id} style={styles.productRow}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 700 }}>{g.categoria} — {fmtGs(g.monto)}</div>
+              <div style={{ fontSize: 12, color: "#B08968" }}>{fmtDateTime(g.fecha)}{g.descripcion ? ` · ${g.descripcion}` : ""}</div>
+            </div>
+            <button style={styles.iconButtonSm} onClick={() => setEditing(g)}>✎</button>
+            <button style={{ ...styles.iconButtonSm, color: "#B91C1C" }} onClick={() => borrar(g.id)}>🗑</button>
+          </div>
+        ))}
+        {gastosFiltrados.length === 0 && <p style={{ color: "#B08968" }}>Sin gastos en este período.</p>}
+      </div>
+
+      {editing && <GastoForm gasto={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSave={guardar} />}
+    </div>
+  );
+}
+
+function GastoForm({ gasto, onClose, onSave }) {
+  const [categoria, setCategoria] = useState(gasto?.categoria || CATEGORIAS_GASTO[0]);
+  const [monto, setMonto] = useState(gasto?.monto ?? "");
+  const [fecha, setFecha] = useState(gasto?.fecha ? gasto.fecha.slice(0, 10) : todayStr());
+  const [descripcion, setDescripcion] = useState(gasto?.descripcion || "");
+  const valido = monto !== "" && Number(monto) > 0;
+
+  return (
+    <ModalWrap onClose={onClose} title={gasto ? "Editar gasto" : "Nuevo gasto"}>
+      <label style={styles.label}>Categoría</label>
+      <select style={styles.input} value={categoria} onChange={(e) => setCategoria(e.target.value)}>
+        {CATEGORIAS_GASTO.map((c) => <option key={c} value={c}>{c}</option>)}
+      </select>
+      <label style={{ ...styles.label, marginTop: 12 }}>Monto (₲)</label>
+      <input style={styles.input} type="number" value={monto} onChange={(e) => setMonto(e.target.value)} placeholder="Ej: 2500000" autoFocus />
+      <label style={{ ...styles.label, marginTop: 12 }}>Fecha</label>
+      <input style={styles.input} type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} />
+      <label style={{ ...styles.label, marginTop: 12 }}>Descripción (opcional)</label>
+      <input style={styles.input} value={descripcion} onChange={(e) => setDescripcion(e.target.value)} placeholder="Ej: Sueldo Marcos, julio" />
+      <button style={{ ...styles.primaryButton, marginTop: 16 }} disabled={!valido}
+        onClick={() => onSave({ id: gasto?.id, categoria, monto: Number(monto), fecha: new Date(fecha).toISOString(), descripcion: descripcion.trim() })}>
+        Guardar
+      </button>
+    </ModalWrap>
   );
 }
 
