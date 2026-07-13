@@ -4,6 +4,9 @@ Acá queda el registro de todos los cambios importantes del sistema, en orden, c
 
 ---
 
+## v2.0.1 — 12/07/2026
+- Ya no se asume que todo lo que es categoría "Chop" usa CO2 del tanque compartido: ahora es un tilde editable por producto (se sugiere destildado automáticamente para productos Heineken, pero se puede ajustar para cualquier producto). Esto también corrige el cálculo del costo estimado por vaso, que antes contaba de más.
+
 ## v2.0.0 — 12/07/2026
 - **Entrega 1 de costos y márgenes:**
 - Nueva pestaña "Insumos" en Back Office: cargá cosas como vasos o botellas, con su costo unitario, reutilizables entre productos.

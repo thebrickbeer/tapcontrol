@@ -89,7 +89,7 @@ function construirLineasApertura(caja, config) {
 // número se vaya ajustando solo con el tiempo, en vez de depender de un único dato raro.
 function calcularCostoCO2(co2Cambios, ventas, productos) {
   const ordenados = [...co2Cambios].sort((a, b) => new Date(a.fecha) - new Date(b.fecha));
-  const chopIds = new Set(productos.filter((p) => p.categoria === "chop").map((p) => p.id));
+  const chopIds = new Set(productos.filter((p) => p.categoria === "chop" && p.usaCO2 !== false).map((p) => p.id));
   const vasosVendidosEntre = (desde, hasta) =>
     ventas
       .filter((v) => !v.anulada)
@@ -162,7 +162,7 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.0.1";
 const APP_VERSION_FECHA = "12/07/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
@@ -1061,7 +1061,7 @@ function costoTotalProducto(p, insumos, costoCO2PorVaso) {
     const insumo = insumos.find((i) => i.id === iu.insumoId);
     return s + (insumo ? insumo.costoUnitario * iu.cantidad : 0);
   }, 0);
-  const costoCO2 = p.categoria === "chop" ? (costoCO2PorVaso || 0) : 0;
+  const costoCO2 = (p.categoria === "chop" && p.usaCO2 !== false) ? (costoCO2PorVaso || 0) : 0;
   return (p.costoProducto || 0) + costoInsumos + costoCO2;
 }
 
@@ -1093,7 +1093,7 @@ function Productos({ productos, setProductos, showToast, insumos, costoCO2PorVas
                 : <div style={{ ...styles.thumb, ...styles.thumbPlaceholder }}>🍺</div>}
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 700 }}>{p.nombre} {p.activo === false && <span style={{ color: "#B91C1C", fontSize: 11 }}>(inactivo)</span>}</div>
-                <div style={{ fontSize: 12, color: "#B08968" }}>{p.marca} · {CATS.find((c) => c.id === p.categoria)?.label} · {p.tamano}</div>
+                <div style={{ fontSize: 12, color: "#B08968" }}>{p.marca} · {CATS.find((c) => c.id === p.categoria)?.label}{p.categoria === "chop" && p.usaCO2 === false ? " (sin CO2)" : ""} · {p.tamano}</div>
                 <div style={{ fontSize: 12, marginTop: 2 }}>{fmtGs(p.precioGs)} · {fmtBRL(p.precioBRL)}</div>
                 <div style={{ fontSize: 11, marginTop: 2, color: margen >= 0 ? "#166534" : "#B91C1C" }}>
                   Costo: {fmtGs(costo)} · Margen: {fmtGs(margen)} ({margenPct}%)
@@ -1120,6 +1120,9 @@ function ProductoForm({ producto, onClose, onSave, insumos }) {
   const [activo, setActivo] = useState(producto?.activo !== false);
   const [imagen, setImagen] = useState(producto?.imagen || "");
   const [costoProducto, setCostoProducto] = useState(producto?.costoProducto ?? "");
+  const [usaCO2, setUsaCO2] = useState(
+    producto?.usaCO2 !== undefined ? producto.usaCO2 : !/heineken/i.test(producto?.marca || producto?.nombre || "")
+  );
   const [insumosUsados, setInsumosUsados] = useState(producto?.insumos || []);
   const [subiendo, setSubiendo] = useState(false);
   const [errorImg, setErrorImg] = useState("");
@@ -1188,9 +1191,12 @@ function ProductoForm({ producto, onClose, onSave, insumos }) {
       <label style={styles.label}>Costo del producto en sí (₲)</label>
       <input style={styles.input} type="number" value={costoProducto} onChange={(e) => setCostoProducto(e.target.value)} placeholder="Ej: 3000" />
       {categoria === "chop" && (
-        <p style={{ color: "#B08968", fontSize: 12, marginTop: 6 }}>
-          El costo del CO2 no hace falta cargarlo acá — se suma solo, automáticamente, según los cambios de tanque registrados en Insumos.
-        </p>
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 8, marginTop: 8 }}>
+          <input type="checkbox" checked={usaCO2} onChange={(e) => setUsaCO2(e.target.checked)} style={{ marginTop: 3 }} />
+          <span style={{ fontSize: 13 }}>
+            Usa CO2 del tanque compartido (se suma solo, según los cambios de tanque registrados en Insumos). Destildá esto para productos que no lo usan, como Heineken.
+          </span>
+        </label>
       )}
       {insumos.length > 0 && (
         <>
@@ -1209,7 +1215,7 @@ function ProductoForm({ producto, onClose, onSave, insumos }) {
         onClick={() => onSave({
           id: producto?.id, nombre: nombre.trim(), marca: marca.trim(), categoria, tamano: tamano.trim(),
           precioGs: Number(precioGs), precioBRL: Number(precioBRL), activo, imagen,
-          costoProducto: Number(costoProducto) || 0, insumos: insumosUsados,
+          costoProducto: Number(costoProducto) || 0, insumos: insumosUsados, usaCO2,
         })}>
         Guardar
       </button>
