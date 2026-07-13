@@ -162,7 +162,7 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "2.1.0";
+const APP_VERSION = "2.1.1";
 const APP_VERSION_FECHA = "12/07/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
@@ -1713,6 +1713,36 @@ function VentasAdmin({ ventas, setVentas, showToast }) {
 // ================= GASTOS (alquiler, luz, sueldos, condominio, etc.) =================
 const CATEGORIAS_GASTO = ["Alquiler", "Luz", "Agua", "Condominio", "Sueldos", "Insumos varios", "Otros"];
 
+const diasEnMes = (mesCubre) => { // mesCubre = "2026-07"
+  const [anio, mes] = mesCubre.split("-").map(Number);
+  return new Date(anio, mes, 0).getDate();
+};
+
+// Cuánto de UN gasto cae en un día puntual. Los "mensuales" se reparten en partes iguales
+// entre todos los días del mes que cubren; los "puntuales" caen enteros en su fecha.
+function gastoEnDia(gasto, diaISO) {
+  if (gasto.tipo === "mensual") {
+    return dayOf(diaISO).startsWith(gasto.mesCubre) ? gasto.monto / diasEnMes(gasto.mesCubre) : 0;
+  }
+  return dayOf(gasto.fecha) === dayOf(diaISO) ? gasto.monto : 0;
+}
+
+// Cuánto de UN gasto cae dentro de un rango de fechas (para totales de período).
+function gastoEnRango(gasto, rangoDesde, rangoHasta) {
+  if (gasto.tipo === "mensual") {
+    const totalDias = diasEnMes(gasto.mesCubre);
+    const primerDia = `${gasto.mesCubre}-01`;
+    const ultimoDia = `${gasto.mesCubre}-${String(totalDias).padStart(2, "0")}`;
+    const solapDesde = rangoDesde > primerDia ? rangoDesde : primerDia;
+    const solapHasta = rangoHasta < ultimoDia ? rangoHasta : ultimoDia;
+    if (solapDesde > solapHasta) return 0;
+    const diasSolapados = Math.round((new Date(solapHasta) - new Date(solapDesde)) / 86400000) + 1;
+    return (gasto.monto / totalDias) * diasSolapados;
+  }
+  const d = dayOf(gasto.fecha);
+  return (d >= rangoDesde && d <= rangoHasta) ? gasto.monto : 0;
+}
+
 function Gastos({ gastos, setGastos, showToast }) {
   const [modo, setModo] = useState("mes");
   const [desde, setDesde] = useState(todayStr());
@@ -1726,12 +1756,13 @@ function Gastos({ gastos, setGastos, showToast }) {
   else { rangoDesde = desde; rangoHasta = hasta; }
 
   const gastosFiltrados = gastos
-    .filter((g) => dayOf(g.fecha) >= rangoDesde && dayOf(g.fecha) <= rangoHasta)
+    .map((g) => ({ ...g, montoEnPeriodo: gastoEnRango(g, rangoDesde, rangoHasta) }))
+    .filter((g) => g.montoEnPeriodo > 0)
     .sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
 
-  const totalPeriodo = gastosFiltrados.reduce((s, g) => s + g.monto, 0);
+  const totalPeriodo = gastosFiltrados.reduce((s, g) => s + g.montoEnPeriodo, 0);
   const porCategoria = {};
-  gastosFiltrados.forEach((g) => { porCategoria[g.categoria] = (porCategoria[g.categoria] || 0) + g.monto; });
+  gastosFiltrados.forEach((g) => { porCategoria[g.categoria] = (porCategoria[g.categoria] || 0) + g.montoEnPeriodo; });
 
   const guardar = (data) => {
     if (data.id) setGastos(gastos.map((g) => (g.id === data.id ? data : g)));
@@ -1772,8 +1803,16 @@ function Gastos({ gastos, setGastos, showToast }) {
         {gastosFiltrados.map((g) => (
           <div key={g.id} style={styles.productRow}>
             <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 700 }}>{g.categoria} — {fmtGs(g.monto)}</div>
-              <div style={{ fontSize: 12, color: "#B08968" }}>{fmtDateTime(g.fecha)}{g.descripcion ? ` · ${g.descripcion}` : ""}</div>
+              <div style={{ fontWeight: 700 }}>
+                {g.categoria} — {fmtGs(g.montoEnPeriodo)}
+                {g.tipo === "mensual" && Math.round(g.montoEnPeriodo) !== g.monto && (
+                  <span style={{ fontWeight: 400, fontSize: 12, color: "#B08968" }}> (parte de {fmtGs(g.monto)} del mes)</span>
+                )}
+              </div>
+              <div style={{ fontSize: 12, color: "#B08968" }}>
+                {g.tipo === "mensual" ? `Mensual · ${g.mesCubre}` : fmtDateTime(g.fecha)}
+                {g.descripcion ? ` · ${g.descripcion}` : ""}
+              </div>
             </div>
             <button style={styles.iconButtonSm} onClick={() => setEditing(g)}>✎</button>
             <button style={{ ...styles.iconButtonSm, color: "#B91C1C" }} onClick={() => borrar(g.id)}>🗑</button>
@@ -1790,7 +1829,9 @@ function Gastos({ gastos, setGastos, showToast }) {
 function GastoForm({ gasto, onClose, onSave }) {
   const [categoria, setCategoria] = useState(gasto?.categoria || CATEGORIAS_GASTO[0]);
   const [monto, setMonto] = useState(gasto?.monto ?? "");
+  const [tipo, setTipo] = useState(gasto?.tipo || "puntual");
   const [fecha, setFecha] = useState(gasto?.fecha ? gasto.fecha.slice(0, 10) : todayStr());
+  const [mesCubre, setMesCubre] = useState(gasto?.mesCubre || todayStr().slice(0, 7));
   const [descripcion, setDescripcion] = useState(gasto?.descripcion || "");
   const valido = monto !== "" && Number(monto) > 0;
 
@@ -1802,12 +1843,36 @@ function GastoForm({ gasto, onClose, onSave }) {
       </select>
       <label style={{ ...styles.label, marginTop: 12 }}>Monto (₲)</label>
       <input style={styles.input} type="number" value={monto} onChange={(e) => setMonto(e.target.value)} placeholder="Ej: 2500000" autoFocus />
-      <label style={{ ...styles.label, marginTop: 12 }}>Fecha</label>
-      <input style={styles.input} type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} />
+
+      <label style={{ ...styles.label, marginTop: 12 }}>Tipo de gasto</label>
+      <div style={{ display: "flex", gap: 8 }}>
+        <ToggleBtn active={tipo === "puntual"} label="Puntual (un día)" onClick={() => setTipo("puntual")} />
+        <ToggleBtn active={tipo === "mensual"} label="Mensual (se reparte)" onClick={() => setTipo("mensual")} />
+      </div>
+
+      {tipo === "mensual" ? (
+        <>
+          <label style={{ ...styles.label, marginTop: 12 }}>Mes que cubre</label>
+          <input style={styles.input} type="month" value={mesCubre} onChange={(e) => setMesCubre(e.target.value)} />
+          <p style={{ color: "#B08968", fontSize: 12, marginTop: 6 }}>
+            El monto se va a repartir en partes iguales entre todos los días de ese mes, para calcular el punto de equilibrio del período.
+          </p>
+        </>
+      ) : (
+        <>
+          <label style={{ ...styles.label, marginTop: 12 }}>Fecha</label>
+          <input style={styles.input} type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} />
+        </>
+      )}
+
       <label style={{ ...styles.label, marginTop: 12 }}>Descripción (opcional)</label>
       <input style={styles.input} value={descripcion} onChange={(e) => setDescripcion(e.target.value)} placeholder="Ej: Sueldo Marcos, julio" />
       <button style={{ ...styles.primaryButton, marginTop: 16 }} disabled={!valido}
-        onClick={() => onSave({ id: gasto?.id, categoria, monto: Number(monto), fecha: new Date(fecha).toISOString(), descripcion: descripcion.trim() })}>
+        onClick={() => onSave({
+          id: gasto?.id, categoria, monto: Number(monto), tipo, descripcion: descripcion.trim(),
+          fecha: tipo === "mensual" ? new Date(`${mesCubre}-01`).toISOString() : new Date(fecha).toISOString(),
+          mesCubre: tipo === "mensual" ? mesCubre : null,
+        })}>
         Guardar
       </button>
     </ModalWrap>

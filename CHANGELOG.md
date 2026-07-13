@@ -4,6 +4,9 @@ Acá queda el registro de todos los cambios importantes del sistema, en orden, c
 
 ---
 
+## v2.1.1 — 12/07/2026
+- Los gastos ahora pueden cargarse como "Mensual" (ej: alquiler, sueldos): se reparten en partes iguales entre los días del mes que cubren, en vez de pegar de golpe en un solo día. Esto deja la base lista para el gráfico de punto de equilibrio del Dashboard (Entrega 3).
+
 ## v2.1.0 — 12/07/2026
 - **Entrega 2 de costos y márgenes:** nueva pestaña "Gastos" en Back Office. Cargá alquiler, luz, agua, condominio, sueldos y otros gastos, cada uno con su propia fecha, para poder compararlos mes a mes. Muestra el total del período y un resumen por categoría.
 
