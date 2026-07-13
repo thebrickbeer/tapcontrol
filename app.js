@@ -83,6 +83,42 @@ function construirLineasApertura(caja, config) {
   ];
 }
 
+// Calcula cuánto sale, en promedio, el CO2 de UN vaso de chop — a partir de los cambios de
+// tanque registrados y de cuántos chops se vendieron entre un cambio y el siguiente.
+// Solo usa los últimos 5 "tramos cerrados" (con cambio siguiente ya registrado) para que el
+// número se vaya ajustando solo con el tiempo, en vez de depender de un único dato raro.
+function calcularCostoCO2(co2Cambios, ventas, productos) {
+  const ordenados = [...co2Cambios].sort((a, b) => new Date(a.fecha) - new Date(b.fecha));
+  const chopIds = new Set(productos.filter((p) => p.categoria === "chop").map((p) => p.id));
+  const vasosVendidosEntre = (desde, hasta) =>
+    ventas
+      .filter((v) => !v.anulada)
+      .filter((v) => new Date(v.fecha) >= new Date(desde) && new Date(v.fecha) < new Date(hasta))
+      .reduce((s, v) => s + v.items.filter((it) => chopIds.has(it.productId)).reduce((s2, it) => s2 + it.qty, 0), 0);
+
+  const tramos = [];
+  for (let i = 0; i < ordenados.length - 1; i++) {
+    const actual = ordenados[i];
+    const siguiente = ordenados[i + 1];
+    if (!actual.costoTanque) continue;
+    const vasos = vasosVendidosEntre(actual.fecha, siguiente.fecha);
+    if (vasos > 0) tramos.push({ ...actual, vasos, costoPorVaso: actual.costoTanque / vasos });
+  }
+
+  let tramoAbierto = null;
+  if (ordenados.length > 0) {
+    const ultimo = ordenados[ordenados.length - 1];
+    tramoAbierto = { ...ultimo, vasos: vasosVendidosEntre(ultimo.fecha, nowISO()) };
+  }
+
+  const ultimosCerrados = tramos.slice(-5);
+  const costoPorVaso = ultimosCerrados.length > 0
+    ? ultimosCerrados.reduce((s, t) => s + t.costoPorVaso, 0) / ultimosCerrados.length
+    : 0;
+
+  return { costoPorVaso, tramos, tramoAbierto, suficienteData: ultimosCerrados.length > 0 };
+}
+
 // Achica una foto (File) y la devuelve como texto base64 listo para guardar.
 // maxDim = tamaño máximo en píxeles del lado más largo. quality = calidad JPG (0 a 1).
 function resizeImageToBase64(file, maxDim = 220, quality = 0.6) {
@@ -126,7 +162,7 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "1.9.2";
+const APP_VERSION = "2.0.0";
 const APP_VERSION_FECHA = "12/07/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
@@ -153,6 +189,8 @@ function App() {
   const [movimientos, setMovimientos] = useState([]);
   const [usuarios, setUsuarios] = useState([]);
   const [config, setConfig] = useState(null);
+  const [insumos, setInsumos] = useState([]);
+  const [co2Cambios, setCo2Cambios] = useState([]);
   const [view, setView] = useState("home");
   const [operador, setOperador] = useState("");
   const [activeCajaId, setActiveCajaId] = useState(null);
@@ -166,7 +204,7 @@ function App() {
 
   useEffect(() => {
     let unsubs = [];
-    const flags = { productos: false, cajas: false, ventas: false, movimientos: false, usuarios: false, config: false };
+    const flags = { productos: false, cajas: false, ventas: false, movimientos: false, usuarios: false, config: false, insumos: false, co2: false };
     const checkReady = () => {
       if (Object.values(flags).every(Boolean)) setReady(true);
     };
@@ -216,6 +254,18 @@ function App() {
           flags.config = true; checkReady();
         }, (e) => { console.error(e); setConnError(true); })
       );
+      unsubs.push(
+        coll().doc("insumos").onSnapshot((snap) => {
+          setInsumos(snap.exists ? snap.data().items || [] : []);
+          flags.insumos = true; checkReady();
+        }, (e) => { console.error(e); setConnError(true); })
+      );
+      unsubs.push(
+        coll().doc("co2").onSnapshot((snap) => {
+          setCo2Cambios(snap.exists ? snap.data().items || [] : []);
+          flags.co2 = true; checkReady();
+        }, (e) => { console.error(e); setConnError(true); })
+      );
     });
 
     return () => { unsubAuth(); unsubs.forEach((u) => u()); };
@@ -227,6 +277,8 @@ function App() {
   const persistMovimientos = async (next) => { setMovimientos(next); await persist("movimientos", next); };
   const persistUsuarios = async (next) => { setUsuarios(next); await persist("usuarios", next); };
   const persistConfig = async (next) => { setConfig(next); await coll().doc("config").set(next); };
+  const persistInsumos = async (next) => { setInsumos(next); await persist("insumos", next); };
+  const persistCo2Cambios = async (next) => { setCo2Cambios(next); await persist("co2", next); };
 
   const activeCaja = cajas.find((c) => c.id === activeCajaId);
 
@@ -327,6 +379,11 @@ function App() {
           onIrACierre={() => setView("cierre")}
           showToast={showToast}
           config={config}
+          ultimoCostoCO2={co2Cambios.length > 0 ? [...co2Cambios].sort((a, b) => new Date(b.fecha) - new Date(a.fecha))[0].costoTanque : null}
+          onCambioCO2={async ({ usuario, costoTanque }) => {
+            await persistCo2Cambios([...co2Cambios, { id: uid(), fecha: nowISO(), usuario, costoTanque }]);
+            showToast("Cambio de tanque de CO2 registrado");
+          }}
         />
       )}
 
@@ -368,6 +425,10 @@ function App() {
           config={config}
           setConfig={persistConfig}
           showToast={showToast}
+          insumos={insumos}
+          setInsumos={persistInsumos}
+          co2Cambios={co2Cambios}
+          setCo2Cambios={persistCo2Cambios}
         />
       )}
     </div>
@@ -529,11 +590,12 @@ function Apertura({ operador, onBack, onAbrir }) {
 }
 
 // ================= POS =================
-function POS({ caja, productos, onSalir, onVenta, onMovimiento, onIrACierre, showToast, config }) {
+function POS({ caja, productos, onSalir, onVenta, onMovimiento, onIrACierre, showToast, config, ultimoCostoCO2, onCambioCO2 }) {
   const [catFiltro, setCatFiltro] = useState("todos");
   const [cart, setCart] = useState([]);
   const [showCheckout, setShowCheckout] = useState(false);
   const [showMov, setShowMov] = useState(false);
+  const [showCO2, setShowCO2] = useState(false);
   const [ticket, setTicket] = useState(null);
 
   const addToCart = (p) => {
@@ -565,6 +627,7 @@ function POS({ caja, productos, onSalir, onVenta, onMovimiento, onIrACierre, sho
               showToast(ok ? "Comprobante de apertura reenviado" : "⚠️ No se pudo imprimir. Revisá el servidor de impresión.");
             }}>🖨</button>
           <button style={styles.iconButton} title="Movimiento de caja" onClick={() => setShowMov(true)}>🔁</button>
+          <button style={styles.iconButton} title="Cambio de tanque de CO2" onClick={() => setShowCO2(true)}>🔄</button>
           <button style={styles.iconButton} title="Cerrar caja" onClick={onIrACierre}>📋</button>
           <button style={styles.iconButton} title="Salir" onClick={onSalir}>🚪</button>
         </div>
@@ -640,6 +703,14 @@ function POS({ caja, productos, onSalir, onVenta, onMovimiento, onIrACierre, sho
         />
       )}
 
+      {showCO2 && (
+        <CambioCO2Modal
+          ultimoCosto={ultimoCostoCO2}
+          onClose={() => setShowCO2(false)}
+          onConfirm={(costoTanque) => { onCambioCO2({ usuario: caja.operador, costoTanque }); setShowCO2(false); }}
+        />
+      )}
+
       {ticket && <TicketVenta venta={ticket} caja={caja} onClose={() => setTicket(null)} showToast={showToast} config={config} />}
     </div>
   );
@@ -672,6 +743,26 @@ function CheckoutModal({ cartDetailed, onClose, onConfirm }) {
       </div>
       <div style={styles.totalBox}><span>Total</span><strong>{fmtMoney(total, moneda)}</strong></div>
       <button style={{ ...styles.primaryButton, marginTop: 16 }} onClick={() => onConfirm(moneda, metodoPago)}>✓ Confirmar venta</button>
+    </ModalWrap>
+  );
+}
+
+function CambioCO2Modal({ ultimoCosto, onClose, onConfirm }) {
+  const [costoTanque, setCostoTanque] = useState(ultimoCosto ? String(ultimoCosto) : "");
+  return (
+    <ModalWrap onClose={onClose} title="🔄 Cambio de tanque de CO2">
+      <p style={{ color: "#7C5E3C", fontSize: 13, marginBottom: 12 }}>
+        Registrá el cambio para que el sistema pueda estimar solo cuánto sale el CO2 de cada chop, según cuántos vasos salen por tanque.
+      </p>
+      <label style={styles.label}>Costo del tanque (₲) — opcional</label>
+      <input style={styles.input} type="number" value={costoTanque} onChange={(e) => setCostoTanque(e.target.value)} placeholder="Ej: 180000" />
+      <p style={{ color: "#B08968", fontSize: 12, marginTop: 8 }}>
+        Si no sabés el costo ahora, podés dejarlo en blanco y cargarlo después desde Back Office.
+      </p>
+      <button style={{ ...styles.primaryButton, marginTop: 16 }}
+        onClick={() => onConfirm(costoTanque ? Number(costoTanque) : null)}>
+        Registrar cambio
+      </button>
     </ModalWrap>
   );
 }
@@ -855,7 +946,7 @@ function Cierre({ caja, ventas, movimientos, onBack, onCerrar, onFinalizar, show
 }
 
 // ================= BACK OFFICE =================
-function BackOffice({ onBack, productos, setProductos, cajas, setCajas, ventas, setVentas, movimientos, usuarios, setUsuarios, config, setConfig, showToast }) {
+function BackOffice({ onBack, productos, setProductos, cajas, setCajas, ventas, setVentas, movimientos, usuarios, setUsuarios, config, setConfig, showToast, insumos, setInsumos, co2Cambios, setCo2Cambios }) {
   const [tab, setTab] = useState("reportes");
   return (
     <div style={styles.boLayout}>
@@ -863,6 +954,7 @@ function BackOffice({ onBack, productos, setProductos, cajas, setCajas, ventas, 
       <div style={styles.tabRow}>
         <TabBtn active={tab === "reportes"} label="Reportes" emoji="📊" onClick={() => setTab("reportes")} />
         <TabBtn active={tab === "productos"} label="Productos" emoji="🍺" onClick={() => setTab("productos")} />
+        <TabBtn active={tab === "insumos"} label="Insumos" emoji="🧊" onClick={() => setTab("insumos")} />
         <TabBtn active={tab === "turnos"} label="Turnos" emoji="📋" onClick={() => setTab("turnos")} />
         <TabBtn active={tab === "ventas"} label="Ventas" emoji="🧾" onClick={() => setTab("ventas")} />
         <TabBtn active={tab === "movimientos"} label="Movimientos" emoji="🔁" onClick={() => setTab("movimientos")} />
@@ -871,7 +963,14 @@ function BackOffice({ onBack, productos, setProductos, cajas, setCajas, ventas, 
       </div>
       <div style={{ padding: "0 16px 32px" }}>
         {tab === "reportes" && <Reportes ventas={ventas} cajas={cajas} productos={productos} />}
-        {tab === "productos" && <Productos productos={productos} setProductos={setProductos} showToast={showToast} />}
+        {tab === "productos" && <Productos productos={productos} setProductos={setProductos} showToast={showToast} insumos={insumos} costoCO2PorVaso={calcularCostoCO2(co2Cambios, ventas, productos).costoPorVaso} />}
+        {tab === "insumos" && (
+          <Insumos
+            insumos={insumos} setInsumos={setInsumos}
+            co2Cambios={co2Cambios} setCo2Cambios={setCo2Cambios}
+            ventas={ventas} productos={productos} showToast={showToast}
+          />
+        )}
         {tab === "turnos" && <Turnos cajas={cajas} setCajas={setCajas} ventas={ventas} movimientos={movimientos} showToast={showToast} />}
         {tab === "ventas" && <VentasAdmin ventas={ventas} setVentas={setVentas} showToast={showToast} />}
         {tab === "movimientos" && <MovimientosHistorial movimientos={movimientos} />}
@@ -956,7 +1055,17 @@ function Reportes({ ventas, cajas, productos }) {
   );
 }
 
-function Productos({ productos, setProductos, showToast }) {
+// Costo total de un producto = costo directo + insumos que usa + CO2 estimado (si es chop).
+function costoTotalProducto(p, insumos, costoCO2PorVaso) {
+  const costoInsumos = (p.insumos || []).reduce((s, iu) => {
+    const insumo = insumos.find((i) => i.id === iu.insumoId);
+    return s + (insumo ? insumo.costoUnitario * iu.cantidad : 0);
+  }, 0);
+  const costoCO2 = p.categoria === "chop" ? (costoCO2PorVaso || 0) : 0;
+  return (p.costoProducto || 0) + costoInsumos + costoCO2;
+}
+
+function Productos({ productos, setProductos, showToast, insumos, costoCO2PorVaso }) {
   const [editing, setEditing] = useState(null);
   const save = (data) => {
     if (data.id) setProductos(productos.map((p) => (p.id === data.id ? data : p)));
@@ -973,27 +1082,35 @@ function Productos({ productos, setProductos, showToast }) {
         <button style={styles.secondaryButton} onClick={() => setEditing("new")}>➕ Nuevo</button>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {productos.map((p) => (
-          <div key={p.id} style={styles.productRow}>
-            {p.imagen
-              ? <img src={p.imagen} alt={p.nombre} style={styles.thumb} />
-              : <div style={{ ...styles.thumb, ...styles.thumbPlaceholder }}>🍺</div>}
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 700 }}>{p.nombre} {p.activo === false && <span style={{ color: "#B91C1C", fontSize: 11 }}>(inactivo)</span>}</div>
-              <div style={{ fontSize: 12, color: "#B08968" }}>{p.marca} · {CATS.find((c) => c.id === p.categoria)?.label} · {p.tamano}</div>
-              <div style={{ fontSize: 12, marginTop: 2 }}>{fmtGs(p.precioGs)} · {fmtBRL(p.precioBRL)}</div>
+        {productos.map((p) => {
+          const costo = costoTotalProducto(p, insumos, costoCO2PorVaso);
+          const margen = p.precioGs - costo;
+          const margenPct = p.precioGs > 0 ? Math.round((margen / p.precioGs) * 100) : 0;
+          return (
+            <div key={p.id} style={styles.productRow}>
+              {p.imagen
+                ? <img src={p.imagen} alt={p.nombre} style={styles.thumb} />
+                : <div style={{ ...styles.thumb, ...styles.thumbPlaceholder }}>🍺</div>}
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700 }}>{p.nombre} {p.activo === false && <span style={{ color: "#B91C1C", fontSize: 11 }}>(inactivo)</span>}</div>
+                <div style={{ fontSize: 12, color: "#B08968" }}>{p.marca} · {CATS.find((c) => c.id === p.categoria)?.label} · {p.tamano}</div>
+                <div style={{ fontSize: 12, marginTop: 2 }}>{fmtGs(p.precioGs)} · {fmtBRL(p.precioBRL)}</div>
+                <div style={{ fontSize: 11, marginTop: 2, color: margen >= 0 ? "#166534" : "#B91C1C" }}>
+                  Costo: {fmtGs(costo)} · Margen: {fmtGs(margen)} ({margenPct}%)
+                </div>
+              </div>
+              <button style={styles.iconButtonSm} onClick={() => setEditing(p)}>✎</button>
+              <button style={{ ...styles.iconButtonSm, color: "#B91C1C" }} onClick={() => remove(p.id)}>🗑</button>
             </div>
-            <button style={styles.iconButtonSm} onClick={() => setEditing(p)}>✎</button>
-            <button style={{ ...styles.iconButtonSm, color: "#B91C1C" }} onClick={() => remove(p.id)}>🗑</button>
-          </div>
-        ))}
+          );
+        })}
       </div>
-      {editing && <ProductoForm producto={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSave={save} />}
+      {editing && <ProductoForm producto={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSave={save} insumos={insumos} />}
     </div>
   );
 }
 
-function ProductoForm({ producto, onClose, onSave }) {
+function ProductoForm({ producto, onClose, onSave, insumos }) {
   const [nombre, setNombre] = useState(producto?.nombre || "");
   const [marca, setMarca] = useState(producto?.marca || "");
   const [categoria, setCategoria] = useState(producto?.categoria || "chop");
@@ -1002,9 +1119,19 @@ function ProductoForm({ producto, onClose, onSave }) {
   const [precioBRL, setPrecioBRL] = useState(producto?.precioBRL ?? "");
   const [activo, setActivo] = useState(producto?.activo !== false);
   const [imagen, setImagen] = useState(producto?.imagen || "");
+  const [costoProducto, setCostoProducto] = useState(producto?.costoProducto ?? "");
+  const [insumosUsados, setInsumosUsados] = useState(producto?.insumos || []);
   const [subiendo, setSubiendo] = useState(false);
   const [errorImg, setErrorImg] = useState("");
   const valido = nombre.trim() && precioGs !== "" && precioBRL !== "";
+
+  const cantidadDe = (insumoId) => insumosUsados.find((iu) => iu.insumoId === insumoId)?.cantidad || 0;
+  const setCantidad = (insumoId, cantidad) => {
+    setInsumosUsados((prev) => {
+      const sinEse = prev.filter((iu) => iu.insumoId !== insumoId);
+      return cantidad > 0 ? [...sinEse, { insumoId, cantidad }] : sinEse;
+    });
+  };
 
   const elegirFoto = async (e) => {
     const file = e.target.files?.[0];
@@ -1056,8 +1183,34 @@ function ProductoForm({ producto, onClose, onSave }) {
       <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
         <input type="checkbox" checked={activo} onChange={(e) => setActivo(e.target.checked)} /> Activo (visible para la venta)
       </label>
+
+      <SectionTitle>Costos (para calcular el margen)</SectionTitle>
+      <label style={styles.label}>Costo del producto en sí (₲)</label>
+      <input style={styles.input} type="number" value={costoProducto} onChange={(e) => setCostoProducto(e.target.value)} placeholder="Ej: 3000" />
+      {categoria === "chop" && (
+        <p style={{ color: "#B08968", fontSize: 12, marginTop: 6 }}>
+          El costo del CO2 no hace falta cargarlo acá — se suma solo, automáticamente, según los cambios de tanque registrados en Insumos.
+        </p>
+      )}
+      {insumos.length > 0 && (
+        <>
+          <label style={{ ...styles.label, marginTop: 12 }}>Insumos que usa (ej: vaso)</label>
+          {insumos.map((i) => (
+            <div key={i.id} style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+              <span style={{ flex: 1, fontSize: 13 }}>{i.nombre} ({fmtGs(i.costoUnitario)})</span>
+              <input style={{ ...styles.input, width: 70 }} type="number" min="0" value={cantidadDe(i.id)}
+                onChange={(e) => setCantidad(i.id, Math.max(0, Number(e.target.value) || 0))} />
+            </div>
+          ))}
+        </>
+      )}
+
       <button style={{ ...styles.primaryButton, marginTop: 16 }} disabled={!valido || subiendo}
-        onClick={() => onSave({ id: producto?.id, nombre: nombre.trim(), marca: marca.trim(), categoria, tamano: tamano.trim(), precioGs: Number(precioGs), precioBRL: Number(precioBRL), activo, imagen })}>
+        onClick={() => onSave({
+          id: producto?.id, nombre: nombre.trim(), marca: marca.trim(), categoria, tamano: tamano.trim(),
+          precioGs: Number(precioGs), precioBRL: Number(precioBRL), activo, imagen,
+          costoProducto: Number(costoProducto) || 0, insumos: insumosUsados,
+        })}>
         Guardar
       </button>
     </ModalWrap>
@@ -1141,6 +1294,125 @@ function DatosNegocio({ config, setConfig, showToast }) {
         <button style={{ ...styles.primaryButton, marginTop: 12 }} onClick={guardar}>Guardar</button>
       </div>
     </>
+  );
+}
+
+// ================= USUARIOS (cajeros + contraseña admin) =================
+// ================= INSUMOS (vasos, botellas, etc.) + CO2 =================
+function Insumos({ insumos, setInsumos, co2Cambios, setCo2Cambios, ventas, productos, showToast }) {
+  const [editing, setEditing] = useState(null);
+  const [showCO2, setShowCO2] = useState(false);
+
+  const guardarInsumo = (data) => {
+    if (data.id) setInsumos(insumos.map((i) => (i.id === data.id ? data : i)));
+    else setInsumos([...insumos, { ...data, id: uid() }]);
+    setEditing(null);
+    showToast("Insumo guardado");
+  };
+  const borrarInsumo = (id) => { setInsumos(insumos.filter((i) => i.id !== id)); showToast("Insumo eliminado"); };
+
+  const co2 = calcularCostoCO2(co2Cambios, ventas, productos);
+  const cambiosOrdenados = [...co2Cambios].sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+
+  const registrarCambioAdmin = (costoTanque, fecha) => {
+    setCo2Cambios([...co2Cambios, { id: uid(), fecha: fecha || nowISO(), usuario: "Admin", costoTanque }]);
+    setShowCO2(false);
+    showToast("Cambio de tanque registrado");
+  };
+  const borrarCambioCO2 = (id) => { setCo2Cambios(co2Cambios.filter((c) => c.id !== id)); showToast("Registro eliminado"); };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <SectionTitle>Insumos ({insumos.length})</SectionTitle>
+        <button style={styles.secondaryButton} onClick={() => setEditing("new")}>➕ Nuevo</button>
+      </div>
+      <p style={{ color: "#7C5E3C", fontSize: 13, marginTop: -8, marginBottom: 12 }}>
+        Cosas que se gastan al vender (vasos, botellas, etc). Después, en cada producto, elegís cuáles usa.
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {insumos.map((i) => (
+          <div key={i.id} style={styles.productRow}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 700 }}>{i.nombre}</div>
+              <div style={{ fontSize: 12, color: "#B08968" }}>Costo unitario: {fmtGs(i.costoUnitario)}</div>
+            </div>
+            <button style={styles.iconButtonSm} onClick={() => setEditing(i)}>✎</button>
+            <button style={{ ...styles.iconButtonSm, color: "#B91C1C" }} onClick={() => borrarInsumo(i.id)}>🗑</button>
+          </div>
+        ))}
+        {insumos.length === 0 && <p style={{ color: "#B08968" }}>Todavía no cargaste ningún insumo.</p>}
+      </div>
+      {editing && <InsumoForm insumo={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSave={guardarInsumo} />}
+
+      <SectionTitle>CO2 (chop)</SectionTitle>
+      <div style={styles.card}>
+        <p style={{ color: "#7C5E3C", fontSize: 13, marginBottom: 12 }}>
+          El costo del CO2 no se carga a mano: se estima solo, según cuántos vasos de chop salen entre un cambio de tanque y el siguiente. Cuantos más cambios se registren, más precisa es la estimación.
+        </p>
+        {co2.suficienteData ? (
+          <MiniRow label="Costo estimado por vaso" value={fmtGs(co2.costoPorVaso)} bold />
+        ) : (
+          <p style={{ color: "#B08968", fontSize: 13 }}>
+            Todavía no hay suficientes cambios de tanque registrados (hace falta al menos 2, con ventas de chop en el medio) para poder estimar el costo.
+          </p>
+        )}
+        {co2.tramoAbierto && (
+          <MiniRow label="Vasos vendidos desde el último cambio" value={co2.tramoAbierto.vasos} />
+        )}
+        <button style={{ ...styles.secondaryButton, marginTop: 12 }} onClick={() => setShowCO2(true)}>🔄 Registrar cambio de tanque</button>
+
+        <SectionTitle>Historial de cambios</SectionTitle>
+        <TableBox headers={["Fecha", "Por", "Costo tanque", "Vasos en el tramo"]}
+          rows={cambiosOrdenados.map((c) => {
+            const tramo = co2.tramos.find((t) => t.id === c.id);
+            return [
+              fmtDateTime(c.fecha),
+              c.usuario,
+              c.costoTanque ? fmtGs(c.costoTanque) : "-",
+              tramo ? tramo.vasos : (co2.tramoAbierto?.id === c.id ? `${co2.tramoAbierto.vasos} (en curso)` : "-"),
+            ];
+          })}
+          empty="Sin cambios registrados" />
+      </div>
+
+      {showCO2 && <CambioCO2AdminModal onClose={() => setShowCO2(false)} onConfirm={registrarCambioAdmin} />}
+    </div>
+  );
+}
+
+function InsumoForm({ insumo, onClose, onSave }) {
+  const [nombre, setNombre] = useState(insumo?.nombre || "");
+  const [costoUnitario, setCostoUnitario] = useState(insumo?.costoUnitario ?? "");
+  const valido = nombre.trim() && costoUnitario !== "";
+  return (
+    <ModalWrap onClose={onClose} title={insumo ? "Editar insumo" : "Nuevo insumo"}>
+      <label style={styles.label}>Nombre</label>
+      <input style={styles.input} value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ej: Vaso 300ml" autoFocus />
+      <label style={{ ...styles.label, marginTop: 12 }}>Costo unitario (₲)</label>
+      <input style={styles.input} type="number" value={costoUnitario} onChange={(e) => setCostoUnitario(e.target.value)} placeholder="Ej: 800" />
+      <button style={{ ...styles.primaryButton, marginTop: 16 }} disabled={!valido}
+        onClick={() => onSave({ id: insumo?.id, nombre: nombre.trim(), costoUnitario: Number(costoUnitario) })}>
+        Guardar
+      </button>
+    </ModalWrap>
+  );
+}
+
+function CambioCO2AdminModal({ onClose, onConfirm }) {
+  const [costoTanque, setCostoTanque] = useState("");
+  const [fecha, setFecha] = useState(() => new Date().toISOString().slice(0, 16));
+  return (
+    <ModalWrap onClose={onClose} title="Registrar cambio de tanque">
+      <label style={styles.label}>Fecha y hora</label>
+      <input style={styles.input} type="datetime-local" value={fecha} onChange={(e) => setFecha(e.target.value)} />
+      <label style={{ ...styles.label, marginTop: 12 }}>Costo del tanque (₲) — opcional</label>
+      <input style={styles.input} type="number" value={costoTanque} onChange={(e) => setCostoTanque(e.target.value)} placeholder="Ej: 180000" />
+      <button style={{ ...styles.primaryButton, marginTop: 16 }}
+        onClick={() => onConfirm(costoTanque ? Number(costoTanque) : null, new Date(fecha).toISOString())}>
+        Registrar
+      </button>
+    </ModalWrap>
   );
 }
 

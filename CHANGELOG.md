@@ -4,6 +4,13 @@ Acá queda el registro de todos los cambios importantes del sistema, en orden, c
 
 ---
 
+## v2.0.0 — 12/07/2026
+- **Entrega 1 de costos y márgenes:**
+- Nueva pestaña "Insumos" en Back Office: cargá cosas como vasos o botellas, con su costo unitario, reutilizables entre productos.
+- Nuevo botón 🔄 en la pantalla de venta (POS) para que el cajero registre un cambio de tanque de CO2, y equivalente en Back Office → Insumos para que el admin también lo pueda cargar.
+- El costo del CO2 por vaso de chop se calcula solo, automáticamente, según cuántos chops se vendieron entre un cambio de tanque y el siguiente (promedio de los últimos 5 tramos).
+- Cada producto ahora tiene "Costo del producto" y qué insumos usa (ej: 1 vaso). Back Office → Productos muestra el costo total y el margen estimado de cada uno.
+
 ## v1.9.2 — 12/07/2026
 - Nuevo botón 🖨 en la pantalla de venta (POS) para que el cajero pueda reimprimir el comprobante de apertura en cualquier momento mientras su caja sigue abierta (antes solo se podía reimprimir el cierre).
 
