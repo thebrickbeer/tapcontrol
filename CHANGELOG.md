@@ -4,6 +4,9 @@ Acá queda el registro de todos los cambios importantes del sistema, en orden, c
 
 ---
 
+## v2.2.0 — 12/10/2026
+- **Nuevo reporte de Utilidad** en Back Office → Reportes (botón "💰 Utilidad"): ventas, costo de lo vendido, utilidad bruta, gastos del período (mensuales prorrateados) y utilidad neta, con márgenes. Incluye detalle por categoría y por producto, y avisa qué productos no tienen costo cargado. Las ventas en R$ se pasan a ₲ con una cotización editable (se guarda).
+
 ## v2.1.2 — 13/07/2026
 - En Back Office → Ventas, el botón "Cambiar a tarjeta/efectivo" se reemplaza por **"Modificar"**: abre una ventana donde se puede corregir tanto el método de pago (efectivo/tarjeta) como la moneda (Gs/R$) de un ticket ya cargado. Si se cambia la moneda, los precios se recalculan con el precio actual de cada producto en la nueva moneda.
 

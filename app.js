@@ -162,7 +162,7 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "2.1.2";
+const APP_VERSION = "2.2.0";
 const APP_VERSION_FECHA = "13/07/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
@@ -973,7 +973,7 @@ function BackOffice({ onBack, productos, setProductos, cajas, setCajas, ventas, 
         <TabBtn active={tab === "config"} label="Configuración" emoji="🎨" onClick={() => setTab("config")} />
       </div>
       <div style={{ padding: "0 16px 32px" }}>
-        {tab === "reportes" && <Reportes ventas={ventas} cajas={cajas} productos={productos} />}
+        {tab === "reportes" && <Reportes ventas={ventas} cajas={cajas} productos={productos} insumos={insumos} co2Cambios={co2Cambios} gastos={gastos} config={config} setConfig={setConfig} showToast={showToast} />}
         {tab === "productos" && <Productos productos={productos} setProductos={setProductos} showToast={showToast} insumos={insumos} costoCO2PorVaso={calcularCostoCO2(co2Cambios, ventas, productos).costoPorVaso} />}
         {tab === "insumos" && (
           <Insumos
@@ -993,7 +993,8 @@ function BackOffice({ onBack, productos, setProductos, cajas, setCajas, ventas, 
   );
 }
 
-function Reportes({ ventas, cajas, productos }) {
+function Reportes({ ventas, cajas, productos, insumos, co2Cambios, gastos, config, setConfig, showToast }) {
+  const [vista, setVista] = useState("ventas"); // "ventas" | "utilidad"
   const [modo, setModo] = useState("hoy");
   const [desde, setDesde] = useState(todayStr());
   const [hasta, setHasta] = useState(todayStr());
@@ -1026,6 +1027,12 @@ function Reportes({ ventas, cajas, productos }) {
 
   return (
     <div>
+      <SectionTitle>Tipo de reporte</SectionTitle>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        <ToggleBtn active={vista === "ventas"} label="📊 Ventas" onClick={() => setVista("ventas")} />
+        <ToggleBtn active={vista === "utilidad"} label="💰 Utilidad" onClick={() => setVista("utilidad")} />
+      </div>
+
       <SectionTitle>Período</SectionTitle>
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
         <ToggleBtn active={modo === "hoy"} label="Hoy" onClick={() => setModo("hoy")} />
@@ -1039,6 +1046,13 @@ function Reportes({ ventas, cajas, productos }) {
         </div>
       )}
 
+      {vista === "utilidad" && (
+        <ReporteUtilidad ventasFiltradas={ventasFiltradas} productos={productos} insumos={insumos} co2Cambios={co2Cambios}
+          ventas={ventas} gastos={gastos} config={config} setConfig={setConfig} showToast={showToast}
+          rangoDesde={rangoDesde} rangoHasta={rangoHasta} />
+      )}
+
+      {vista === "ventas" && <>
       <SectionTitle>Venta total</SectionTitle>
       <div style={styles.reportGrid}>
         <StatBox label="Total ₲" value={fmtGs(totalGs)} />
@@ -1063,6 +1077,116 @@ function Reportes({ ventas, cajas, productos }) {
           return [c.operador, fmtDateTime(c.fechaApertura), fmtDateTime(c.fechaCierre), fmtGs(tg), fmtBRL(tb), c.estado];
         })}
         empty="Sin turnos en el período" />
+      </>}
+    </div>
+  );
+}
+
+// ---------- Reporte de utilidad (ganancia) ----------
+// Todo se calcula en guaraníes. Las ventas en R$ se pasan a ₲ con la cotización guardada en config.
+function ReporteUtilidad({ ventasFiltradas, ventas, productos, insumos, co2Cambios, gastos, config, setConfig, showToast, rangoDesde, rangoHasta }) {
+  const [tasaTxt, setTasaTxt] = useState(String(config?.tasaBRL || 1400));
+  const tasa = Number(tasaTxt) > 0 ? Number(tasaTxt) : 0;
+
+  const guardarTasa = async () => {
+    if (!tasa) return;
+    if (tasa !== config?.tasaBRL) { await setConfig({ ...config, tasaBRL: tasa }); showToast("Cotización guardada"); }
+  };
+
+  const costoCO2PorVaso = calcularCostoCO2(co2Cambios, ventas, productos).costoPorVaso;
+  const prodPorId = {};
+  productos.forEach((p) => { prodPorId[p.id] = p; });
+  const labelCat = (id) => (CATS.find((c) => c.id === id)?.label) || "Otros";
+
+  const porProducto = {};
+  const porCategoria = {};
+  let ventasGs = 0, costoGs = 0;
+  const sinCosto = new Set();
+
+  ventasFiltradas.forEach((v) => {
+    const factor = v.moneda === "BRL" ? tasa : 1;
+    v.items.forEach((it) => {
+      const p = prodPorId[it.productId];
+      const costoUnit = p ? costoTotalProducto(p, insumos, costoCO2PorVaso) : 0;
+      if (!p || !costoUnit) sinCosto.add(it.nombre);
+      const ingreso = it.subtotal * factor;
+      const costo = costoUnit * it.qty;
+      ventasGs += ingreso; costoGs += costo;
+      const cat = labelCat(p?.categoria);
+      if (!porProducto[it.nombre]) porProducto[it.nombre] = { qty: 0, ingreso: 0, costo: 0 };
+      if (!porCategoria[cat]) porCategoria[cat] = { qty: 0, ingreso: 0, costo: 0 };
+      [porProducto[it.nombre], porCategoria[cat]].forEach((o) => { o.qty += it.qty; o.ingreso += ingreso; o.costo += costo; });
+    });
+  });
+
+  const utilBruta = ventasGs - costoGs;
+  const margenBruto = ventasGs > 0 ? (utilBruta / ventasGs) * 100 : 0;
+  const gastosPeriodo = gastos.reduce((s, g) => s + gastoEnRango(g, rangoDesde, rangoHasta), 0);
+  const utilNeta = utilBruta - gastosPeriodo;
+  const margenNeto = ventasGs > 0 ? (utilNeta / ventasGs) * 100 : 0;
+
+  const gastosPorCat = {};
+  gastos.forEach((g) => {
+    const m = gastoEnRango(g, rangoDesde, rangoHasta);
+    if (m > 0) gastosPorCat[g.categoria || "Otros"] = (gastosPorCat[g.categoria || "Otros"] || 0) + m;
+  });
+
+  const pct = (n) => `${n.toFixed(1)}%`;
+  const colorUtil = (n) => ({ color: n < 0 ? "#B91C1C" : "#15803D", fontWeight: 700 });
+  const filaUtil = ([nombre, d]) => {
+    const u = d.ingreso - d.costo;
+    return [nombre, d.qty, fmtGs(d.ingreso), fmtGs(d.costo), <span style={colorUtil(u)}>{fmtGs(u)}</span>, d.ingreso > 0 ? pct((u / d.ingreso) * 100) : "-"];
+  };
+  const ordenar = (obj) => Object.entries(obj).sort((a, b) => (b[1].ingreso - b[1].costo) - (a[1].ingreso - a[1].costo));
+  const hayBrl = ventasFiltradas.some((v) => v.moneda === "BRL");
+
+  return (
+    <div>
+      <SectionTitle>Cotización R$ → ₲</SectionTitle>
+      <div style={styles.card}>
+        <p style={{ color: "#7C5E3C", fontSize: 13, marginBottom: 8 }}>
+          Para sumar las ventas en reales con las de guaraníes. 1 R$ = ₲
+        </p>
+        <input style={styles.input} type="number" inputMode="numeric" value={tasaTxt}
+          onChange={(e) => setTasaTxt(e.target.value)} onBlur={guardarTasa} />
+        {hayBrl && !config?.tasaBRL && <p style={{ color: "#B45309", fontSize: 12, marginTop: 6 }}>Usando 1.400 por defecto — ajustala y salí del campo para guardarla.</p>}
+      </div>
+
+      <SectionTitle>Resultado del período</SectionTitle>
+      <div style={styles.reportGrid}>
+        <StatBox label="Ventas (₲)" value={fmtGs(ventasGs)} />
+        <StatBox label="Costo de lo vendido" value={fmtGs(costoGs)} />
+        <StatBox label="Utilidad bruta" value={fmtGs(utilBruta)} />
+        <StatBox label="Margen bruto" value={pct(margenBruto)} />
+        <StatBox label="Gastos del período" value={fmtGs(gastosPeriodo)} />
+        <StatBox label="Utilidad neta" value={fmtGs(utilNeta)} />
+        <StatBox label="Margen neto" value={pct(margenNeto)} />
+      </div>
+
+      {sinCosto.size > 0 && (
+        <div style={{ ...styles.card, borderColor: "#B45309", marginTop: 12 }}>
+          <p style={{ color: "#B45309", fontSize: 13 }}>
+            ⚠️ Estos productos no tienen costo cargado (o fueron eliminados), así que figuran con 100% de ganancia: <b>{[...sinCosto].join(", ")}</b>. Cargá su costo en Productos para que la utilidad sea real.
+          </p>
+        </div>
+      )}
+
+      <SectionTitle>Utilidad por categoría</SectionTitle>
+      <TableBox headers={["Categoría", "Cant.", "Ventas ₲", "Costo ₲", "Utilidad ₲", "Margen"]}
+        rows={ordenar(porCategoria).map(filaUtil)} empty="Sin ventas en el período" />
+
+      <SectionTitle>Utilidad por producto</SectionTitle>
+      <TableBox headers={["Producto", "Cant.", "Ventas ₲", "Costo ₲", "Utilidad ₲", "Margen"]}
+        rows={ordenar(porProducto).map(filaUtil)} empty="Sin ventas en el período" />
+
+      <SectionTitle>Gastos del período</SectionTitle>
+      <TableBox headers={["Categoría", "Monto ₲"]}
+        rows={Object.entries(gastosPorCat).sort((a, b) => b[1] - a[1]).map(([c, m]) => [c, fmtGs(Math.round(m))])}
+        empty="Sin gastos en el período" />
+
+      <p style={{ color: "#7C5E3C", fontSize: 12, marginTop: 12 }}>
+        El costo usa el costo actual de cada producto + insumos + CO2 estimado. Los gastos mensuales se reparten por día. Las ventas anuladas no cuentan.
+      </p>
     </div>
   );
 }
