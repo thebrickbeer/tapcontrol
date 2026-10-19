@@ -163,7 +163,7 @@ const SEED_PRODUCTS = [
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
 const APP_VERSION = "2.2.1";
-const APP_VERSION_FECHA = "13/07/2026";
+const APP_VERSION_FECHA = "19/10/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
 }
