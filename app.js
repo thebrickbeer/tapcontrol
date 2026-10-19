@@ -1,4 +1,4 @@
-const { useState, useEffect, useCallback } = React;
+const { useState, useEffect, useCallback, useRef } = React;
 
 // ---------- helpers ----------
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -162,7 +162,7 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "2.2.0";
+const APP_VERSION = "2.2.1";
 const APP_VERSION_FECHA = "13/07/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
@@ -738,6 +738,15 @@ function CatChip({ active, label, onClick }) {
 function CheckoutModal({ cartDetailed, onClose, onConfirm }) {
   const [moneda, setMoneda] = useState("GS");
   const [metodoPago, setMetodoPago] = useState("efectivo");
+  const [enviando, setEnviando] = useState(false);
+  const bloqueo = useRef(false); // evita que un doble toque genere dos ventas
+  const confirmar = async () => {
+    if (bloqueo.current) return;
+    bloqueo.current = true;
+    setEnviando(true);
+    try { await onConfirm(moneda, metodoPago); }
+    finally { bloqueo.current = false; setEnviando(false); }
+  };
   const total = cartDetailed.reduce((s, i) => s + (moneda === "GS" ? i.p.precioGs : i.p.precioBRL) * i.qty, 0);
   return (
     <ModalWrap onClose={onClose} title="Cobrar venta">
@@ -752,7 +761,7 @@ function CheckoutModal({ cartDetailed, onClose, onConfirm }) {
         <ToggleBtn active={metodoPago === "tarjeta"} label="Tarjeta" onClick={() => setMetodoPago("tarjeta")} />
       </div>
       <div style={styles.totalBox}><span>Total</span><strong>{fmtMoney(total, moneda)}</strong></div>
-      <button style={{ ...styles.primaryButton, marginTop: 16 }} onClick={() => onConfirm(moneda, metodoPago)}>✓ Confirmar venta</button>
+      <button style={{ ...styles.primaryButton, marginTop: 16, opacity: enviando ? 0.6 : 1 }} disabled={enviando} onClick={confirmar}>{enviando ? "Procesando…" : "✓ Confirmar venta"}</button>
     </ModalWrap>
   );
 }

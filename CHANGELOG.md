@@ -4,6 +4,9 @@ Acá queda el registro de todos los cambios importantes del sistema, en orden, c
 
 ---
 
+## v2.2.1 — 19/10/2026
+- Corregido: un doble toque en "Confirmar venta" podía generar dos ventas (y dos tickets con números consecutivos). Ahora el botón se bloquea al primer toque y muestra "Procesando…".
+
 ## v2.2.0 — 12/10/2026
 - **Nuevo reporte de Utilidad** en Back Office → Reportes (botón "💰 Utilidad"): ventas, costo de lo vendido, utilidad bruta, gastos del período (mensuales prorrateados) y utilidad neta, con márgenes. Incluye detalle por categoría y por producto, y avisa qué productos no tienen costo cargado. Las ventas en R$ se pasan a ₲ con una cotización editable (se guarda).
 
