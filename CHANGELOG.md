@@ -4,6 +4,10 @@ Acá queda el registro de todos los cambios importantes del sistema, en orden, c
 
 ---
 
+## v2.3.0 — 26/10/2026
+- **Corrección importante:** las ventas se guardaban todas juntas en un solo documento de Firebase, que tiene un límite de 1 MB. Al llegar a ~4.000 ventas (15/10/2026) dejó de guardar nuevas ventas sin avisar. Ahora cada venta se guarda por separado (sin límite), y las ventas existentes se copian automáticamente la primera vez que se abre la app. El documento viejo queda como respaldo.
+- Si una venta no se puede guardar, ahora aparece un aviso rojo en pantalla en vez de fallar en silencio.
+
 ## v2.2.1 — 19/10/2026
 - Corregido: un doble toque en "Confirmar venta" podía generar dos ventas (y dos tickets con números consecutivos). Ahora el botón se bloquea al primer toque y muestra "Procesando…".
 

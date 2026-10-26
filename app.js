@@ -162,10 +162,41 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "2.2.1";
-const APP_VERSION_FECHA = "19/10/2026";
+const APP_VERSION = "2.3.0";
+const APP_VERSION_FECHA = "26/10/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
+}
+
+// ---------- Ventas: un documento por venta ----------
+// Antes todas las ventas vivían en UN solo documento, y Firestore limita cada documento a 1 MB:
+// al llegar a ~4000 ventas dejó de guardar. Ahora cada venta es su propio documento (sin tope).
+const ventasCol = () => coll().doc("ventas").collection("registro");
+
+// Copia, una sola vez, las ventas del documento viejo a la colección nueva.
+// El documento viejo NO se borra (queda como respaldo).
+async function migrarVentasViejas() {
+  const marca = coll().doc("ventas_migrada");
+  if ((await marca.get()).exists) return;
+  const viejo = await coll().doc("ventas").get();
+  const items = (viejo.exists && viejo.data().items) || [];
+  for (let i = 0; i < items.length; i += 400) {
+    const batch = db.batch();
+    items.slice(i, i + 400).forEach((v) => { if (v && v.id) batch.set(ventasCol().doc(String(v.id)), v); });
+    await batch.commit();
+  }
+  await marca.set({ ok: true, cantidad: items.length, fecha: new Date().toISOString() });
+}
+
+// Guarda solo las ventas nuevas o modificadas (nunca borra: las ventas se anulan, no se eliminan).
+async function guardarVentasCambiadas(anteriores, siguientes) {
+  const previas = new Map(anteriores.map((v) => [v.id, JSON.stringify(v)]));
+  const cambiadas = siguientes.filter((v) => previas.get(v.id) !== JSON.stringify(v));
+  for (let i = 0; i < cambiadas.length; i += 400) {
+    const batch = db.batch();
+    cambiadas.slice(i, i + 400).forEach((v) => batch.set(ventasCol().doc(String(v.id)), v));
+    await batch.commit();
+  }
 }
 
 // Devuelve el próximo número de ticket, consecutivo, sin importar qué cajero está vendiendo.
@@ -203,8 +234,11 @@ function App() {
     setTimeout(() => setToast(null), 2500);
   }, []);
 
+  const ventasRef = useRef([]);
+
   useEffect(() => {
     let unsubs = [];
+    let cancelado = false;
     const flags = { productos: false, cajas: false, ventas: false, movimientos: false, usuarios: false, config: false, insumos: false, co2: false, gastos: false };
     const checkReady = () => {
       if (Object.values(flags).every(Boolean)) setReady(true);
@@ -231,12 +265,17 @@ function App() {
           flags.cajas = true; checkReady();
         }, (e) => { console.error(e); setConnError(true); })
       );
-      unsubs.push(
-        coll().doc("ventas").onSnapshot((snap) => {
-          setVentas(snap.exists ? snap.data().items || [] : []);
-          flags.ventas = true; checkReady();
-        }, (e) => { console.error(e); setConnError(true); })
-      );
+      migrarVentasViejas().catch((e) => console.error("Migración de ventas:", e)).then(() => {
+        if (cancelado) return;
+        unsubs.push(
+          ventasCol().onSnapshot((snap) => {
+            const lista = snap.docs.map((d) => d.data()).sort((a, b) => new Date(a.fecha) - new Date(b.fecha));
+            ventasRef.current = lista;
+            setVentas(lista);
+            flags.ventas = true; checkReady();
+          }, (e) => { console.error(e); setConnError(true); })
+        );
+      });
       unsubs.push(
         coll().doc("movimientos").onSnapshot((snap) => {
           setMovimientos(snap.exists ? snap.data().items || [] : []);
@@ -275,12 +314,20 @@ function App() {
       );
     });
 
-    return () => { unsubAuth(); unsubs.forEach((u) => u()); };
+    return () => { cancelado = true; unsubAuth(); unsubs.forEach((u) => u()); };
   }, []);
 
   const persistProductos = async (next) => { setProductos(next); await persist("productos", next); };
   const persistCajas = async (next) => { setCajas(next); await persist("cajas", next); };
-  const persistVentas = async (next) => { setVentas(next); await persist("ventas", next); };
+  const persistVentas = async (next) => {
+    try {
+      await guardarVentasCambiadas(ventasRef.current, next);
+    } catch (e) {
+      console.error("Error guardando ventas:", e);
+      showToast("⚠️ NO se pudo guardar la venta. Avisá al administrador.");
+      throw e;
+    }
+  };
   const persistMovimientos = async (next) => { setMovimientos(next); await persist("movimientos", next); };
   const persistUsuarios = async (next) => { setUsuarios(next); await persist("usuarios", next); };
   const persistConfig = async (next) => { setConfig(next); await coll().doc("config").set(next); };
