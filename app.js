@@ -164,7 +164,7 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "2.3.1";
+const APP_VERSION = "2.3.2";
 const APP_VERSION_FECHA = "31/10/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
@@ -822,13 +822,11 @@ function CambioCO2Modal({ ultimoCosto, onClose, onConfirm }) {
       <p style={{ color: "#7C5E3C", fontSize: 13, marginBottom: 12 }}>
         Registrá el cambio para que el sistema pueda estimar solo cuánto sale el CO2 de cada chop, según cuántos vasos salen por tanque.
       </p>
-      <label style={styles.label}>Costo del tanque (₲) — opcional</label>
+      <label style={styles.label}>Costo del tanque (₲) — obligatorio</label>
       <input style={styles.input} type="number" value={costoTanque} onChange={(e) => setCostoTanque(e.target.value)} placeholder="Ej: 180000" />
-      <p style={{ color: "#B08968", fontSize: 12, marginTop: 8 }}>
-        Si no sabés el costo ahora, podés dejarlo en blanco y cargarlo después desde Back Office.
-      </p>
-      <button style={{ ...styles.primaryButton, marginTop: 16 }}
-        onClick={() => onConfirm(costoTanque ? Number(costoTanque) : null)}>
+      <button style={{ ...styles.primaryButton, marginTop: 16, opacity: Number(costoTanque) > 0 ? 1 : 0.5 }}
+        disabled={!(Number(costoTanque) > 0)}
+        onClick={() => onConfirm(Number(costoTanque))}>
         Registrar cambio
       </button>
     </ModalWrap>
@@ -1601,15 +1599,16 @@ function InsumoForm({ insumo, onClose, onSave }) {
 
 function CambioCO2AdminModal({ onClose, onConfirm }) {
   const [costoTanque, setCostoTanque] = useState("");
-  const [fecha, setFecha] = useState(() => new Date().toISOString().slice(0, 16));
+  const [fecha, setFecha] = useState(() => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); });
   return (
     <ModalWrap onClose={onClose} title="Registrar cambio de tanque">
       <label style={styles.label}>Fecha y hora</label>
       <input style={styles.input} type="datetime-local" value={fecha} onChange={(e) => setFecha(e.target.value)} />
-      <label style={{ ...styles.label, marginTop: 12 }}>Costo del tanque (₲) — opcional</label>
+      <label style={{ ...styles.label, marginTop: 12 }}>Costo del tanque (₲) — obligatorio</label>
       <input style={styles.input} type="number" value={costoTanque} onChange={(e) => setCostoTanque(e.target.value)} placeholder="Ej: 180000" />
-      <button style={{ ...styles.primaryButton, marginTop: 16 }}
-        onClick={() => onConfirm(costoTanque ? Number(costoTanque) : null, new Date(fecha).toISOString())}>
+      <button style={{ ...styles.primaryButton, marginTop: 16, opacity: Number(costoTanque) > 0 && fecha ? 1 : 0.5 }}
+        disabled={!(Number(costoTanque) > 0 && fecha)}
+        onClick={() => onConfirm(Number(costoTanque), new Date(fecha).toISOString())}>
         Registrar
       </button>
     </ModalWrap>

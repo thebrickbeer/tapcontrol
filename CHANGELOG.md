@@ -4,6 +4,10 @@ Acá queda el registro de todos los cambios importantes del sistema, en orden, c
 
 ---
 
+## v2.3.2 — 31/10/2026
+- El **costo del tanque de CO2 ahora es obligatorio** al registrar un cambio de tanque (tanto en la pantalla de venta como en Back Office → Insumos). El botón queda deshabilitado hasta cargar un monto mayor a cero.
+- En el registro de cambio desde Back Office, la fecha y hora que aparece por defecto ahora es la hora local real (antes mostraba 3 horas de más).
+
 ## v2.3.1 — 31/10/2026
 - Back Office → Gastos: los gastos puntuales mostraban el día anterior a la hora local (ej: un gasto del 01/10 aparecía como 30/9, 9:00 p. m.) aunque se sumaban bien en el mes correcto. Ahora muestran la fecha correcta, sin hora.
 
