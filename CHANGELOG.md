@@ -4,6 +4,9 @@ Acá queda el registro de todos los cambios importantes del sistema, en orden, c
 
 ---
 
+## v2.3.1 — 31/10/2026
+- Back Office → Gastos: los gastos puntuales mostraban el día anterior a la hora local (ej: un gasto del 01/10 aparecía como 30/9, 9:00 p. m.) aunque se sumaban bien en el mes correcto. Ahora muestran la fecha correcta, sin hora.
+
 ## v2.3.0 — 26/10/2026
 - **Corrección importante:** las ventas se guardaban todas juntas en un solo documento de Firebase, que tiene un límite de 1 MB. Al llegar a ~4.000 ventas (15/10/2026) dejó de guardar nuevas ventas sin avisar. Ahora cada venta se guarda por separado (sin límite), y las ventas existentes se copian automáticamente la primera vez que se abre la app. El documento viejo queda como respaldo.
 - Si una venta no se puede guardar, ahora aparece un aviso rojo en pantalla en vez de fallar en silencio.
