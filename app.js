@@ -13,6 +13,8 @@ const fmtHora = (iso) =>
   iso ? new Date(iso).toLocaleTimeString("es-PY", { timeStyle: "short" }) : "-";
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const dayOf = (iso) => iso.slice(0, 10);
+// Fecha (sin hora) de un gasto puntual, mostrada con el mismo criterio con que se filtra (dayOf).
+const fmtDia = (iso) => { const [a, m, d] = dayOf(iso).split("-"); return `${d}/${m}/${a}`; };
 
 // Intenta mandar el ticket directo al servidor de impresión local (sin diálogo de Windows).
 // Si no está prendido o falla, devuelve false para que la app avise con un cartel de advertencia.
@@ -162,8 +164,8 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "2.3.0";
-const APP_VERSION_FECHA = "26/10/2026";
+const APP_VERSION = "2.3.1";
+const APP_VERSION_FECHA = "31/10/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
 }
@@ -2062,7 +2064,7 @@ function Gastos({ gastos, setGastos, showToast }) {
                 )}
               </div>
               <div style={{ fontSize: 12, color: "#B08968" }}>
-                {g.tipo === "mensual" ? `Mensual · ${g.mesCubre}` : fmtDateTime(g.fecha)}
+                {g.tipo === "mensual" ? `Mensual · ${g.mesCubre}` : fmtDia(g.fecha)}
                 {g.descripcion ? ` · ${g.descripcion}` : ""}
               </div>
             </div>
