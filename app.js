@@ -2,7 +2,42 @@ const { useState, useEffect, useCallback, useRef } = React;
 
 // ---------- helpers ----------
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-const nowISO = () => new Date().toISOString();
+// ---------- Reloj confiable ----------
+// La hora de la computadora puede estar mal (ej: pila de la placa agotada). Por eso la app le pregunta
+// la hora real a internet y trabaja con esa. RELOJ_OFFSET = milisegundos que hay que sumarle al reloj del equipo.
+let RELOJ_OFFSET = 0;
+let RELOJ_SINCRONIZADO = false;
+const ahora = () => new Date(Date.now() + RELOJ_OFFSET);
+const nowISO = () => ahora().toISOString();
+
+async function sincronizarReloj() {
+  // Método 1: encabezado "Date" del propio servidor donde está alojada la app (GitHub Pages).
+  try {
+    const t0 = Date.now();
+    const res = await fetch("sw.js?_=" + t0, { method: "HEAD", cache: "no-store" });
+    const t1 = Date.now();
+    const fecha = res.headers.get("Date");
+    if (!fecha) throw new Error("sin encabezado Date");
+    const edad = Number(res.headers.get("Age")) || 0;
+    const servidor = new Date(fecha).getTime() + edad * 1000 + 500; // el encabezado no trae milisegundos
+    RELOJ_OFFSET = servidor - (t0 + t1) / 2;
+    RELOJ_SINCRONIZADO = true;
+    return true;
+  } catch (e) { console.warn("Reloj (método 1) falló:", e); }
+  // Método 2: hora del servidor de Firebase.
+  try {
+    const ref = db.collection("tapcontrol").doc("_reloj");
+    const t0 = Date.now();
+    await ref.set({ t: firebase.firestore.FieldValue.serverTimestamp() });
+    const snap = await ref.get({ source: "server" });
+    const t1 = Date.now();
+    RELOJ_OFFSET = snap.data().t.toMillis() - (t0 + t1) / 2;
+    RELOJ_SINCRONIZADO = true;
+    return true;
+  } catch (e) { console.warn("Reloj (método 2) falló:", e); }
+  return false;
+}
+
 const fmtGs = (n) => "₲ " + new Intl.NumberFormat("es-PY").format(Math.round(n || 0));
 const fmtBRL = (n) =>
   new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(n || 0);
@@ -11,7 +46,7 @@ const fmtDateTime = (iso) =>
   iso ? new Date(iso).toLocaleString("es-PY", { dateStyle: "short", timeStyle: "short" }) : "-";
 const fmtHora = (iso) =>
   iso ? new Date(iso).toLocaleTimeString("es-PY", { timeStyle: "short" }) : "-";
-const todayStr = () => new Date().toISOString().slice(0, 10);
+const todayStr = () => ahora().toISOString().slice(0, 10);
 const dayOf = (iso) => iso.slice(0, 10);
 // Fecha (sin hora) de un gasto puntual, mostrada con el mismo criterio con que se filtra (dayOf).
 const fmtDia = (iso) => { const [a, m, d] = dayOf(iso).split("-"); return `${d}/${m}/${a}`; };
@@ -164,8 +199,8 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "2.3.2";
-const APP_VERSION_FECHA = "31/10/2026";
+const APP_VERSION = "2.4.0";
+const APP_VERSION_FECHA = "19/11/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
 }
@@ -187,7 +222,7 @@ async function migrarVentasViejas() {
     items.slice(i, i + 400).forEach((v) => { if (v && v.id) batch.set(ventasCol().doc(String(v.id)), v); });
     await batch.commit();
   }
-  await marca.set({ ok: true, cantidad: items.length, fecha: new Date().toISOString() });
+  await marca.set({ ok: true, cantidad: items.length, fecha: nowISO() });
 }
 
 // Guarda solo las ventas nuevas o modificadas (nunca borra: las ventas se anulan, no se eliminan).
@@ -241,7 +276,8 @@ function App() {
   useEffect(() => {
     let unsubs = [];
     let cancelado = false;
-    const flags = { productos: false, cajas: false, ventas: false, movimientos: false, usuarios: false, config: false, insumos: false, co2: false, gastos: false };
+    let relojIniciado = false;
+    const flags = { reloj: false, productos: false, cajas: false, ventas: false, movimientos: false, usuarios: false, config: false, insumos: false, co2: false, gastos: false };
     const checkReady = () => {
       if (Object.values(flags).every(Boolean)) setReady(true);
     };
@@ -253,6 +289,13 @@ function App() {
 
     const unsubAuth = auth.onAuthStateChanged((user) => {
       if (!user) return;
+
+      if (!relojIniciado) {
+        relojIniciado = true;
+        Promise.race([sincronizarReloj(), new Promise((r) => setTimeout(() => r(false), 6000))]).then(() => {
+          flags.reloj = true; checkReady();
+        });
+      }
 
       unsubs.push(
         coll().doc("productos").onSnapshot((snap) => {
@@ -316,7 +359,9 @@ function App() {
       );
     });
 
-    return () => { cancelado = true; unsubAuth(); unsubs.forEach((u) => u()); };
+    const relojTimer = setInterval(sincronizarReloj, 15 * 60 * 1000);
+
+    return () => { cancelado = true; clearInterval(relojTimer); unsubAuth(); unsubs.forEach((u) => u()); };
   }, []);
 
   const persistProductos = async (next) => { setProductos(next); await persist("productos", next); };
@@ -1056,7 +1101,7 @@ function Reportes({ ventas, cajas, productos, insumos, co2Cambios, gastos, confi
   const [hasta, setHasta] = useState(todayStr());
 
   let rangoDesde, rangoHasta;
-  const hoy = new Date();
+  const hoy = ahora();
   if (modo === "hoy") { rangoDesde = todayStr(); rangoHasta = todayStr(); }
   else if (modo === "mes") { rangoDesde = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-01`; rangoHasta = todayStr(); }
   else { rangoDesde = desde; rangoHasta = hasta; }
@@ -1599,7 +1644,7 @@ function InsumoForm({ insumo, onClose, onSave }) {
 
 function CambioCO2AdminModal({ onClose, onConfirm }) {
   const [costoTanque, setCostoTanque] = useState("");
-  const [fecha, setFecha] = useState(() => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); });
+  const [fecha, setFecha] = useState(() => { const d = ahora(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); });
   return (
     <ModalWrap onClose={onClose} title="Registrar cambio de tanque">
       <label style={styles.label}>Fecha y hora</label>
@@ -2003,7 +2048,7 @@ function Gastos({ gastos, setGastos, showToast }) {
   const [editing, setEditing] = useState(null);
 
   let rangoDesde, rangoHasta;
-  const hoy = new Date();
+  const hoy = ahora();
   if (modo === "hoy") { rangoDesde = todayStr(); rangoHasta = todayStr(); }
   else if (modo === "mes") { rangoDesde = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-01`; rangoHasta = todayStr(); }
   else { rangoDesde = desde; rangoHasta = hasta; }
