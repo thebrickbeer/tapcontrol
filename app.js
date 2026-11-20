@@ -89,7 +89,7 @@ function construirLineasApertura(caja, config) {
 // tanque registrados y de cuántos chops se vendieron entre un cambio y el siguiente.
 // Solo usa los últimos 5 "tramos cerrados" (con cambio siguiente ya registrado) para que el
 // número se vaya ajustando solo con el tiempo, en vez de depender de un único dato raro.
-function calcularCostoCO2(co2Cambios, ventas, productos) {
+function calcularCostoCO2(co2Cambios, ventas, productos, cubiertoDesde) {
   const ordenados = [...co2Cambios].sort((a, b) => new Date(a.fecha) - new Date(b.fecha));
   const chopIds = new Set(productos.filter((p) => p.categoria === "chop" && p.usaCO2 !== false).map((p) => p.id));
   const vasosVendidosEntre = (desde, hasta) =>
@@ -103,6 +103,8 @@ function calcularCostoCO2(co2Cambios, ventas, productos) {
     const actual = ordenados[i];
     const siguiente = ordenados[i + 1];
     if (!actual.costoTanque) continue;
+    // Si las ventas de ese tramo no están cargadas todavía, no se puede contar bien: se saltea.
+    if (cubiertoDesde && actual.fecha < cubiertoDesde) continue;
     const vasos = vasosVendidosEntre(actual.fecha, siguiente.fecha);
     if (vasos > 0) tramos.push({ ...actual, vasos, costoPorVaso: actual.costoTanque / vasos });
   }
@@ -119,6 +121,19 @@ function calcularCostoCO2(co2Cambios, ventas, productos) {
     : 0;
 
   return { costoPorVaso, tramos, tramoAbierto, suficienteData: ultimosCerrados.length > 0 };
+}
+
+// Firma corta de los cambios de tanque (fecha/costo): si cambia, hay que recalcular el costo guardado.
+function co2Firma(cambios) {
+  const txt = [...cambios].sort((a, b) => new Date(a.fecha) - new Date(b.fecha)).map((c) => `${c.id}:${c.fecha}:${c.costoTanque || 0}`).join("|");
+  let h = 5381;
+  for (let i = 0; i < txt.length; i++) h = ((h * 33) ^ txt.charCodeAt(i)) >>> 0;
+  return `${cambios.length}-${h}`;
+}
+// Fecha desde la que hacen falta las ventas para calcular el costo (últimos 5 tramos + 1 de margen).
+function co2Necesario(cambios) {
+  const o = [...cambios].sort((a, b) => new Date(a.fecha) - new Date(b.fecha));
+  return o.length ? o[Math.max(0, o.length - 7)].fecha : null;
 }
 
 // Achica una foto (File) y la devuelve como texto base64 listo para guardar.
@@ -164,8 +179,8 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "2.3.2";
-const APP_VERSION_FECHA = "31/10/2026";
+const APP_VERSION = "2.3.3";
+const APP_VERSION_FECHA = "20/11/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
 }
@@ -189,6 +204,12 @@ async function migrarVentasViejas() {
   }
   await marca.set({ ok: true, cantidad: items.length, fecha: new Date().toISOString() });
 }
+
+// Al abrir el sistema solo se escuchan las ventas de los últimos días (así se gastan pocas lecturas
+// de Firestore). Las más viejas se traen a pedido con cargarVentasDesde().
+const VENTANA_DIAS = 7;
+const ventanaInicio = () => new Date(Date.now() - VENTANA_DIAS * 86400000).toISOString().slice(0, 10) + "T00:00:00.000Z";
+const unirPorId = (a, b) => { const m = new Map(a.map((v) => [v.id, v])); b.forEach((v) => m.set(v.id, v)); return [...m.values()]; };
 
 // Guarda solo las ventas nuevas o modificadas (nunca borra: las ventas se anulan, no se eliminan).
 async function guardarVentasCambiadas(anteriores, siguientes) {
@@ -237,6 +258,48 @@ function App() {
   }, []);
 
   const ventasRef = useRef([]);
+  const recRef = useRef([]);          // ventas recientes (con listener en vivo)
+  const histRef = useRef([]);         // ventas más viejas traídas a pedido
+  const ventanaRef = useRef(null);
+  if (!ventanaRef.current) ventanaRef.current = ventanaInicio();
+  const histDesdeRef = useRef(null);
+  const cargaRef = useRef(Promise.resolve(true));
+  const [cubiertoDesde, setCubiertoDesde] = useState(ventanaRef.current);
+  const [cargandoHist, setCargandoHist] = useState(false);
+
+  const recomputarVentas = useCallback(() => {
+    const ids = new Set(recRef.current.map((v) => v.id));
+    const lista = [...histRef.current.filter((v) => !ids.has(v.id)), ...recRef.current].sort((a, b) => new Date(a.fecha) - new Date(b.fecha));
+    ventasRef.current = lista;
+    setVentas(lista);
+  }, []);
+
+  // Trae ventas más viejas (desde esa fecha) si todavía no están cargadas. Devuelve true si quedó todo cargado.
+  const cargarVentasDesde = useCallback((desdeISO) => {
+    if (!desdeISO) return Promise.resolve(true);
+    let dia = String(desdeISO).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dia) || dia < "2026-01-01") dia = "2026-01-01";
+    const objetivo = dia + "T00:00:00.000Z";
+    const p = cargaRef.current.then(async () => {
+      const actual = histDesdeRef.current || ventanaRef.current;
+      if (objetivo >= actual) return true;
+      setCargandoHist(true);
+      try {
+        const snap = await ventasCol().where("fecha", ">=", objetivo).where("fecha", "<", actual).get();
+        histRef.current = unirPorId(histRef.current, snap.docs.map((d) => d.data()));
+        histDesdeRef.current = objetivo;
+        setCubiertoDesde(objetivo);
+        recomputarVentas();
+        return true;
+      } catch (e) {
+        console.error("Cargando historial de ventas:", e);
+        showToast("⚠️ No se pudo cargar el historial de ventas.");
+        return false;
+      } finally { setCargandoHist(false); }
+    });
+    cargaRef.current = p;
+    return p;
+  }, []);
 
   useEffect(() => {
     let unsubs = [];
@@ -270,10 +333,9 @@ function App() {
       migrarVentasViejas().catch((e) => console.error("Migración de ventas:", e)).then(() => {
         if (cancelado) return;
         unsubs.push(
-          ventasCol().onSnapshot((snap) => {
-            const lista = snap.docs.map((d) => d.data()).sort((a, b) => new Date(a.fecha) - new Date(b.fecha));
-            ventasRef.current = lista;
-            setVentas(lista);
+          ventasCol().where("fecha", ">=", ventanaRef.current).onSnapshot((snap) => {
+            recRef.current = snap.docs.map((d) => d.data());
+            recomputarVentas();
             flags.ventas = true; checkReady();
           }, (e) => { console.error(e); setConnError(true); })
         );
@@ -324,6 +386,12 @@ function App() {
   const persistVentas = async (next) => {
     try {
       await guardarVentasCambiadas(ventasRef.current, next);
+      // Las ventas del historial no tienen listener en vivo: se actualizan a mano.
+      if (histRef.current.length) {
+        const nuevas = new Map(next.map((v) => [v.id, v]));
+        histRef.current = histRef.current.map((v) => nuevas.get(v.id) || v);
+        recomputarVentas();
+      }
     } catch (e) {
       console.error("Error guardando ventas:", e);
       showToast("⚠️ NO se pudo guardar la venta. Avisá al administrador.");
@@ -338,6 +406,38 @@ function App() {
   const persistGastos = async (next) => { setGastos(next); await persist("gastos", next); };
 
   const activeCaja = cajas.find((c) => c.id === activeCajaId);
+
+  // Si el turno activo empezó antes de la ventana de ventas cargadas, se trae ese tramo.
+  useEffect(() => { if (activeCaja && activeCaja.fechaApertura) cargarVentasDesde(activeCaja.fechaApertura); }, [activeCajaId]);
+
+  // Si la caja se cerró desde el Back Office mientras el cajero seguía en el POS, se lo saca del POS.
+  useEffect(() => {
+    if (view === "pos" && activeCaja && activeCaja.estado !== "abierta") {
+      showToast("Esta caja fue cerrada desde el Back Office. No se pueden registrar más ventas.");
+      setView("home"); setOperador(""); setActiveCajaId(null);
+    }
+  }, [view, activeCaja && activeCaja.estado]);
+
+  // Costo de CO2 por vaso: se calcula una vez (con ventas históricas) y se guarda en config.co2Cache.
+  // Solo se recalcula cuando cambian los registros de tanque.
+  const co2Sig = co2Firma(co2Cambios);
+  const cacheCO2 = config && config.co2Cache;
+  const co2Calculando = useRef("");
+  useEffect(() => {
+    if (!ready || co2Cambios.length < 2) return;
+    if (cacheCO2 && cacheCO2.sig === co2Sig) return;
+    if (co2Calculando.current === co2Sig) return;
+    co2Calculando.current = co2Sig;
+    (async () => {
+      try {
+        const ok = await cargarVentasDesde(co2Necesario(co2Cambios));
+        if (!ok) { co2Calculando.current = ""; return; }
+        const r = calcularCostoCO2(co2Cambios, ventasRef.current, productos, histDesdeRef.current || ventanaRef.current);
+        await coll().doc("config").set({ co2Cache: { sig: co2Sig, costoPorVaso: r.costoPorVaso, calculado: nowISO() } }, { merge: true });
+      } catch (e) { console.error("Cache CO2:", e); co2Calculando.current = ""; }
+    })();
+  }, [ready, co2Sig, cacheCO2 && cacheCO2.sig]);
+  const costoCO2PorVaso = cacheCO2 ? cacheCO2.costoPorVaso : calcularCostoCO2(co2Cambios, ventas, productos, cubiertoDesde).costoPorVaso;
 
   if (connError) {
     return (
@@ -488,6 +588,10 @@ function App() {
           setCo2Cambios={persistCo2Cambios}
           gastos={gastos}
           setGastos={persistGastos}
+          cargarVentasDesde={cargarVentasDesde}
+          cubiertoDesde={cubiertoDesde}
+          cargandoHist={cargandoHist}
+          costoCO2PorVaso={costoCO2PorVaso}
         />
       )}
     </div>
@@ -743,6 +847,7 @@ function POS({ caja, productos, onSalir, onVenta, onMovimiento, onIrACierre, sho
               return { productId: i.p.id, nombre: i.p.nombre, qty: i.qty, precioUnit, subtotal: precioUnit * i.qty };
             });
             const total = items.reduce((s, i) => s + i.subtotal, 0);
+            if (caja.estado !== "abierta") { showToast("⚠️ La caja está cerrada. La venta NO se registró."); setShowCheckout(false); return; }
             const numero = await nextTicketNumber();
             const venta = { id: uid(), numero, cajaId: caja.id, operador: caja.operador, fecha: nowISO(), items, moneda, metodoPago, total };
             onVenta(venta);
@@ -1012,7 +1117,7 @@ function Cierre({ caja, ventas, movimientos, onBack, onCerrar, onFinalizar, show
 }
 
 // ================= BACK OFFICE =================
-function BackOffice({ onBack, productos, setProductos, cajas, setCajas, ventas, setVentas, movimientos, usuarios, setUsuarios, config, setConfig, showToast, insumos, setInsumos, co2Cambios, setCo2Cambios, gastos, setGastos }) {
+function BackOffice({ onBack, productos, setProductos, cajas, setCajas, ventas, setVentas, movimientos, usuarios, setUsuarios, config, setConfig, showToast, insumos, setInsumos, co2Cambios, setCo2Cambios, gastos, setGastos, cargarVentasDesde, cubiertoDesde, cargandoHist, costoCO2PorVaso }) {
   const [tab, setTab] = useState("reportes");
   return (
     <div style={styles.boLayout}>
@@ -1029,18 +1134,19 @@ function BackOffice({ onBack, productos, setProductos, cajas, setCajas, ventas, 
         <TabBtn active={tab === "config"} label="Configuración" emoji="🎨" onClick={() => setTab("config")} />
       </div>
       <div style={{ padding: "0 16px 32px" }}>
-        {tab === "reportes" && <Reportes ventas={ventas} cajas={cajas} productos={productos} insumos={insumos} co2Cambios={co2Cambios} gastos={gastos} config={config} setConfig={setConfig} showToast={showToast} />}
-        {tab === "productos" && <Productos productos={productos} setProductos={setProductos} showToast={showToast} insumos={insumos} costoCO2PorVaso={calcularCostoCO2(co2Cambios, ventas, productos).costoPorVaso} />}
+        {tab === "reportes" && <Reportes ventas={ventas} cajas={cajas} productos={productos} insumos={insumos} co2Cambios={co2Cambios} gastos={gastos} config={config} setConfig={setConfig} showToast={showToast} cargarVentasDesde={cargarVentasDesde} cargandoHist={cargandoHist} costoCO2PorVaso={costoCO2PorVaso} />}
+        {tab === "productos" && <Productos productos={productos} setProductos={setProductos} showToast={showToast} insumos={insumos} costoCO2PorVaso={costoCO2PorVaso} />}
         {tab === "insumos" && (
           <Insumos
             insumos={insumos} setInsumos={setInsumos}
             co2Cambios={co2Cambios} setCo2Cambios={setCo2Cambios}
             ventas={ventas} productos={productos} showToast={showToast}
+            cargarVentasDesde={cargarVentasDesde} cubiertoDesde={cubiertoDesde} cargandoHist={cargandoHist}
           />
         )}
         {tab === "gastos" && <Gastos gastos={gastos} setGastos={setGastos} showToast={showToast} />}
-        {tab === "turnos" && <Turnos cajas={cajas} setCajas={setCajas} ventas={ventas} movimientos={movimientos} showToast={showToast} />}
-        {tab === "ventas" && <VentasAdmin ventas={ventas} setVentas={setVentas} productos={productos} showToast={showToast} />}
+        {tab === "turnos" && <Turnos cajas={cajas} setCajas={setCajas} ventas={ventas} movimientos={movimientos} showToast={showToast} cargarVentasDesde={cargarVentasDesde} cargandoHist={cargandoHist} />}
+        {tab === "ventas" && <VentasAdmin ventas={ventas} setVentas={setVentas} productos={productos} showToast={showToast} cargarVentasDesde={cargarVentasDesde} cubiertoDesde={cubiertoDesde} cargandoHist={cargandoHist} />}
         {tab === "movimientos" && <MovimientosHistorial movimientos={movimientos} />}
         {tab === "usuarios" && <Usuarios usuarios={usuarios} setUsuarios={setUsuarios} config={config} setConfig={setConfig} showToast={showToast} />}
         {tab === "config" && <Configuracion config={config} setConfig={setConfig} showToast={showToast} />}
@@ -1049,7 +1155,7 @@ function BackOffice({ onBack, productos, setProductos, cajas, setCajas, ventas, 
   );
 }
 
-function Reportes({ ventas, cajas, productos, insumos, co2Cambios, gastos, config, setConfig, showToast }) {
+function Reportes({ ventas, cajas, productos, insumos, co2Cambios, gastos, config, setConfig, showToast, cargarVentasDesde, cargandoHist, costoCO2PorVaso }) {
   const [vista, setVista] = useState("ventas"); // "ventas" | "utilidad"
   const [modo, setModo] = useState("hoy");
   const [desde, setDesde] = useState(todayStr());
@@ -1060,6 +1166,9 @@ function Reportes({ ventas, cajas, productos, insumos, co2Cambios, gastos, confi
   if (modo === "hoy") { rangoDesde = todayStr(); rangoHasta = todayStr(); }
   else if (modo === "mes") { rangoDesde = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-01`; rangoHasta = todayStr(); }
   else { rangoDesde = desde; rangoHasta = hasta; }
+
+  // Si el rango pedido empieza antes de lo que hay cargado, se traen esas ventas.
+  useEffect(() => { cargarVentasDesde(rangoDesde); }, [rangoDesde]);
 
   const ventasFiltradas = ventas.filter((v) => !v.anulada).filter((v) => { const d = dayOf(v.fecha); return d >= rangoDesde && d <= rangoHasta; });
 
@@ -1102,9 +1211,11 @@ function Reportes({ ventas, cajas, productos, insumos, co2Cambios, gastos, confi
         </div>
       )}
 
+      {cargandoHist && <p style={{ fontSize: 12, color: "#B45309", marginBottom: 10 }}>⏳ Cargando ventas del período… los totales se actualizan en unos segundos.</p>}
+
       {vista === "utilidad" && (
         <ReporteUtilidad ventasFiltradas={ventasFiltradas} productos={productos} insumos={insumos} co2Cambios={co2Cambios}
-          ventas={ventas} gastos={gastos} config={config} setConfig={setConfig} showToast={showToast}
+          costoCO2PorVaso={costoCO2PorVaso} gastos={gastos} config={config} setConfig={setConfig} showToast={showToast}
           rangoDesde={rangoDesde} rangoHasta={rangoHasta} />
       )}
 
@@ -1140,7 +1251,7 @@ function Reportes({ ventas, cajas, productos, insumos, co2Cambios, gastos, confi
 
 // ---------- Reporte de utilidad (ganancia) ----------
 // Todo se calcula en guaraníes. Las ventas en R$ se pasan a ₲ con la cotización guardada en config.
-function ReporteUtilidad({ ventasFiltradas, ventas, productos, insumos, co2Cambios, gastos, config, setConfig, showToast, rangoDesde, rangoHasta }) {
+function ReporteUtilidad({ ventasFiltradas, costoCO2PorVaso, productos, insumos, co2Cambios, gastos, config, setConfig, showToast, rangoDesde, rangoHasta }) {
   const [tasaTxt, setTasaTxt] = useState(String(config?.tasaBRL || 1400));
   const tasa = Number(tasaTxt) > 0 ? Number(tasaTxt) : 0;
 
@@ -1149,7 +1260,6 @@ function ReporteUtilidad({ ventasFiltradas, ventas, productos, insumos, co2Cambi
     if (tasa !== config?.tasaBRL) { await setConfig({ ...config, tasaBRL: tasa }); showToast("Cotización guardada"); }
   };
 
-  const costoCO2PorVaso = calcularCostoCO2(co2Cambios, ventas, productos).costoPorVaso;
   const prodPorId = {};
   productos.forEach((p) => { prodPorId[p.id] = p; });
   const labelCat = (id) => (CATS.find((c) => c.id === id)?.label) || "Otros";
@@ -1497,7 +1607,7 @@ function DatosNegocio({ config, setConfig, showToast }) {
 
 // ================= USUARIOS (cajeros + contraseña admin) =================
 // ================= INSUMOS (vasos, botellas, etc.) + CO2 =================
-function Insumos({ insumos, setInsumos, co2Cambios, setCo2Cambios, ventas, productos, showToast }) {
+function Insumos({ insumos, setInsumos, co2Cambios, setCo2Cambios, ventas, productos, showToast, cargarVentasDesde, cubiertoDesde, cargandoHist }) {
   const [editing, setEditing] = useState(null);
   const [showCO2, setShowCO2] = useState(false);
 
@@ -1509,7 +1619,9 @@ function Insumos({ insumos, setInsumos, co2Cambios, setCo2Cambios, ventas, produ
   };
   const borrarInsumo = (id) => { setInsumos(insumos.filter((i) => i.id !== id)); showToast("Insumo eliminado"); };
 
-  const co2 = calcularCostoCO2(co2Cambios, ventas, productos);
+  // El cálculo del CO2 necesita las ventas de los últimos tanques: se traen si faltan.
+  useEffect(() => { cargarVentasDesde(co2Necesario(co2Cambios)); }, [co2Cambios.length]);
+  const co2 = calcularCostoCO2(co2Cambios, ventas, productos, cubiertoDesde);
   const cambiosOrdenados = [...co2Cambios].sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
 
   const registrarCambioAdmin = (costoTanque, fecha) => {
@@ -1709,13 +1821,13 @@ function CambiarPasswordAdmin({ config, setConfig, showToast }) {
   );
 }
 
-function Turnos({ cajas, setCajas, ventas, movimientos, showToast }) {
+function Turnos({ cajas, setCajas, ventas, movimientos, showToast, cargarVentasDesde, cargandoHist }) {
   const [detalle, setDetalle] = useState(null);
   const [contadoGs, setContadoGs] = useState("");
   const [contadoBrl, setContadoBrl] = useState("");
   const ordenadas = [...cajas].sort((a, b) => new Date(b.fechaApertura) - new Date(a.fechaApertura));
 
-  const abrirDetalle = (c) => { setDetalle(c); setContadoGs(""); setContadoBrl(""); };
+  const abrirDetalle = (c) => { cargarVentasDesde(c.fechaApertura); setDetalle(c); setContadoGs(""); setContadoBrl(""); };
 
   const ventasDelTurno = detalle ? ventas.filter((v) => v.cajaId === detalle.id) : [];
   const ventasValidas = ventasDelTurno.filter((v) => !v.anulada);
@@ -1812,7 +1924,7 @@ function Turnos({ cajas, setCajas, ventas, movimientos, showToast }) {
 }
 
 // ================= VENTAS (anular / cambiar método de pago) =================
-function VentasAdmin({ ventas, setVentas, productos, showToast }) {
+function VentasAdmin({ ventas, setVentas, productos, showToast, cargarVentasDesde, cubiertoDesde, cargandoHist }) {
   const [anulando, setAnulando] = useState(null);
   const [modificando, setModificando] = useState(null);
   const [busqueda, setBusqueda] = useState("");
@@ -1842,6 +1954,13 @@ function VentasAdmin({ ventas, setVentas, productos, showToast }) {
   return (
     <div>
       <SectionTitle>Ventas ({ventas.length})</SectionTitle>
+      <p style={{ fontSize: 12, color: "#B08968", marginTop: -6, marginBottom: 8 }}>
+        Cargadas desde el {fmtDia(cubiertoDesde)}.{" "}
+        <button disabled={cargandoHist} style={{ background: "none", border: "none", color: "#B45309", fontWeight: 700, textDecoration: "underline", padding: 0, fontSize: 12 }}
+          onClick={() => { if (window.confirm("Se van a cargar TODAS las ventas anteriores (puede usar varios miles de lecturas de la base). ¿Continuar?")) cargarVentasDesde("2026-01-01"); }}>
+          {cargandoHist ? "Cargando…" : "Cargar historial completo"}
+        </button>
+      </p>
       <input style={{ ...styles.input, marginBottom: 12 }} placeholder="Buscar por N° de ticket u operador…"
         value={busqueda} onChange={(e) => setBusqueda(e.target.value)} />
       {!busqueda.trim() && <p style={{ fontSize: 12, color: "#B08968", marginTop: -6, marginBottom: 10 }}>Mostrando las últimas 100 ventas. Buscá por número u operador para encontrar otras.</p>}
