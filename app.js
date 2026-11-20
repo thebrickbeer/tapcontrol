@@ -43,11 +43,13 @@ function filaTicket(izq, der, ancho = ANCHO_TICKET) {
 }
 
 // Arma las líneas del ticket de venta, listas para mandar al servidor de impresión.
-function construirLineasTicketVenta(venta, config) {
+function construirLineasTicketVenta(venta, config, reimpresion = false) {
   const nombreNegocio = config?.nombreNegocio?.trim() || "TAP CONTROL";
   const L = [];
   L.push({ text: nombreNegocio, bold: true, big: true, align: "center" });
   if (config?.direccion?.trim()) L.push({ text: config.direccion.trim(), align: "center" });
+  if (reimpresion) L.push({ text: "*** REIMPRESION ***", bold: true, align: "center" });
+  if (venta.anulada) L.push({ text: "*** TICKET ANULADO ***", bold: true, big: true, align: "center" });
   L.push({ text: "" });
   L.push({ text: `Empleado: ${venta.operador}` });
   L.push({ text: "................................" });
@@ -179,7 +181,7 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "2.3.3";
+const APP_VERSION = "2.3.4";
 const APP_VERSION_FECHA = "20/11/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
@@ -1146,7 +1148,7 @@ function BackOffice({ onBack, productos, setProductos, cajas, setCajas, ventas, 
         )}
         {tab === "gastos" && <Gastos gastos={gastos} setGastos={setGastos} showToast={showToast} />}
         {tab === "turnos" && <Turnos cajas={cajas} setCajas={setCajas} ventas={ventas} movimientos={movimientos} showToast={showToast} cargarVentasDesde={cargarVentasDesde} cargandoHist={cargandoHist} />}
-        {tab === "ventas" && <VentasAdmin ventas={ventas} setVentas={setVentas} productos={productos} showToast={showToast} cargarVentasDesde={cargarVentasDesde} cubiertoDesde={cubiertoDesde} cargandoHist={cargandoHist} />}
+        {tab === "ventas" && <VentasAdmin config={config} ventas={ventas} setVentas={setVentas} productos={productos} showToast={showToast} cargarVentasDesde={cargarVentasDesde} cubiertoDesde={cubiertoDesde} cargandoHist={cargandoHist} />}
         {tab === "movimientos" && <MovimientosHistorial movimientos={movimientos} />}
         {tab === "usuarios" && <Usuarios usuarios={usuarios} setUsuarios={setUsuarios} config={config} setConfig={setConfig} showToast={showToast} />}
         {tab === "config" && <Configuracion config={config} setConfig={setConfig} showToast={showToast} />}
@@ -1924,10 +1926,19 @@ function Turnos({ cajas, setCajas, ventas, movimientos, showToast, cargarVentasD
 }
 
 // ================= VENTAS (anular / cambiar método de pago) =================
-function VentasAdmin({ ventas, setVentas, productos, showToast, cargarVentasDesde, cubiertoDesde, cargandoHist }) {
+function VentasAdmin({ config, ventas, setVentas, productos, showToast, cargarVentasDesde, cubiertoDesde, cargandoHist }) {
   const [anulando, setAnulando] = useState(null);
   const [modificando, setModificando] = useState(null);
   const [busqueda, setBusqueda] = useState("");
+  const [imprimiendo, setImprimiendo] = useState(null);
+  const reimprimir = async (v) => {
+    if (imprimiendo) return;
+    setImprimiendo(v.id);
+    try {
+      const ok = await imprimirDirecto({ lines: construirLineasTicketVenta(v, config, true), logo: config?.logo });
+      showToast(ok ? `Ticket #${v.numero ?? "-"} enviado a la impresora` : "⚠️ No se pudo imprimir. Revisá que el servidor de impresión esté prendido.");
+    } finally { setImprimiendo(null); }
+  };
 
   const ordenadas = [...ventas].sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
   const filtradas = busqueda.trim()
@@ -1975,6 +1986,9 @@ function VentasAdmin({ ventas, setVentas, productos, showToast, cargarVentasDesd
               <div style={{ fontSize: 13, marginTop: 2 }}>{fmtMoney(v.total, v.moneda)} · <b>{v.metodoPago}</b></div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <button style={styles.secondaryButton} disabled={imprimiendo === v.id} onClick={() => reimprimir(v)}>
+                {imprimiendo === v.id ? "Imprimiendo…" : "🖨 Reimprimir"}
+              </button>
               {!v.anulada ? (
                 <>
                   <button style={styles.secondaryButton} onClick={() => setModificando(v)}>
