@@ -181,8 +181,8 @@ const SEED_PRODUCTS = [
 
 // ---------- Firestore wrapper (colección "tapcontrol", un doc por lista) ----------
 const coll = () => db.collection("tapcontrol");
-const APP_VERSION = "2.3.4";
-const APP_VERSION_FECHA = "20/11/2026";
+const APP_VERSION = "2.3.5";
+const APP_VERSION_FECHA = "21/11/2026";
 function persist(docName, items) {
   return coll().doc(docName).set({ items });
 }
@@ -531,6 +531,7 @@ function App() {
       {view === "pos" && activeCaja && (
         <POS
           caja={activeCaja}
+          ultimaVenta={ventas.filter((v) => v.cajaId === activeCaja.id).slice(-1)[0] || null}
           productos={productos.filter((p) => p.activo !== false)}
           onSalir={() => { setView("home"); setOperador(""); setActiveCajaId(null); }}
           onVenta={async (venta) => { await persistVentas([...ventas, venta]); showToast("Venta registrada"); }}
@@ -755,13 +756,27 @@ function Apertura({ operador, onBack, onAbrir }) {
 }
 
 // ================= POS =================
-function POS({ caja, productos, onSalir, onVenta, onMovimiento, onIrACierre, showToast, config, ultimoCostoCO2, onCambioCO2 }) {
+function POS({ caja, ultimaVenta, productos, onSalir, onVenta, onMovimiento, onIrACierre, showToast, config, ultimoCostoCO2, onCambioCO2 }) {
   const [catFiltro, setCatFiltro] = useState("todos");
   const [cart, setCart] = useState([]);
   const [showCheckout, setShowCheckout] = useState(false);
   const [showMov, setShowMov] = useState(false);
   const [showCO2, setShowCO2] = useState(false);
   const [ticket, setTicket] = useState(null);
+  const [reimprimiendo, setReimprimiendo] = useState(false);
+  const bloqueoReimp = useRef(false);
+
+  // Reimprime la última venta de este turno (por si el ticket no salió o salió mal).
+  const reimprimirUltima = async () => {
+    if (bloqueoReimp.current) return;
+    if (!ultimaVenta) { showToast("Todavía no hay ventas en este turno."); return; }
+    bloqueoReimp.current = true;
+    setReimprimiendo(true);
+    try {
+      const ok = await imprimirDirecto({ lines: construirLineasTicketVenta(ultimaVenta, config, true), logo: config?.logo });
+      showToast(ok ? `Ticket #${ultimaVenta.numero ?? "-"} reenviado a la impresora` : "⚠️ No se pudo imprimir. Revisá que el servidor de impresión esté prendido.");
+    } finally { bloqueoReimp.current = false; setReimprimiendo(false); }
+  };
 
   const addToCart = (p) => {
     setCart((prev) => {
@@ -791,6 +806,7 @@ function POS({ caja, productos, onSalir, onVenta, onMovimiento, onIrACierre, sho
               const ok = await imprimirDirecto({ lines: construirLineasApertura(caja, config), logo: config?.logo });
               showToast(ok ? "Comprobante de apertura reenviado" : "⚠️ No se pudo imprimir. Revisá el servidor de impresión.");
             }}>🖨</button>
+          <button style={{ ...styles.iconButton, opacity: reimprimiendo ? 0.5 : 1 }} title="Reimprimir último ticket" disabled={reimprimiendo} onClick={reimprimirUltima}>🧾</button>
           <button style={styles.iconButton} title="Movimiento de caja" onClick={() => setShowMov(true)}>🔁</button>
           <button style={styles.iconButton} title="Cambio de tanque de CO2" onClick={() => setShowCO2(true)}>🔄</button>
           <button style={styles.iconButton} title="Cerrar caja" onClick={onIrACierre}>📋</button>
